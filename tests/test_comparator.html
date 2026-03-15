@@ -1,0 +1,1020 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM Comparator — Full Test Suite</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mocha@10/mocha.css">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    #test-header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 24px 32px; border-bottom: 1px solid #334155; }
+    #test-header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+    #test-header p  { margin: 0; font-size: 12px; color: #64748b; }
+    #badge-row { display: flex; gap: 8px; margin-top: 12px; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+    .badge-ui   { background: #1d4ed8; color: #bfdbfe; }
+    .badge-fn   { background: #065f46; color: #a7f3d0; }
+    .badge-int  { background: #6b21a8; color: #e9d5ff; }
+    #test-layout { display: grid; grid-template-columns: 1fr 420px; height: calc(100vh - 110px); }
+    #app-frame  { width: 100%; height: 100%; border: none; border-left: 1px solid #334155; background: white; }
+    #mocha      { padding: 16px 24px; overflow-y: auto; height: 100%; box-sizing: border-box; background: #0f172a; color: #e2e8f0; }
+    #mocha h1 a { color: #7c3aed !important; }
+    #mocha h2   { color: #94a3b8 !important; font-size: 14px; }
+    #mocha .suite .suite h2 { color: #64748b !important; font-size: 13px; }
+    #mocha .test.pass .duration { color: #6b7280; font-size: 10px; }
+    #mocha .test.pass > h2::before { content: '✓ '; color: #10b981; }
+    #mocha .test.fail > h2::before { content: '✗ '; color: #ef4444; }
+    #mocha-stats em { color: #7c3aed; }
+    #run-btn { margin: 12px 0; padding: 8px 18px; background: #7c3aed; border: none; border-radius: 6px; color: white; font-weight: 700; cursor: pointer; font-size: 13px; }
+    #run-btn:hover { background: #6d28d9; }
+  </style>
+</head>
+<body>
+  <div id="test-header">
+    <h1>🧪 LLM Model Comparator — Test Suite</h1>
+    <p>Run standalone against cached DOM · Backend optional · No dependencies beyond CDN</p>
+    <div id="badge-row">
+      <span class="badge badge-ui">Suite 1 · UI Skin (DOM)</span>
+      <span class="badge badge-fn">Suite 2 · Function Units</span>
+      <span class="badge badge-int">Suite 3 · Integration</span>
+    </div>
+  </div>
+
+  <div id="test-layout">
+    <!-- Left: test results -->
+    <div>
+      <button id="run-btn" onclick="mocha.run()">▶ Re-run All Tests</button>
+      <div id="mocha"></div>
+    </div>
+    <!-- Right: live app under test -->
+    <iframe id="app-frame" src="../model_comparator.html"></iframe>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/mocha@10/mocha.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chai@4/chai.js"></script>
+  <script>
+    mocha.setup({ ui: 'bdd', timeout: 10000, reporter: 'html' });
+    const { expect } = chai;
+
+    let W, D; // iframe window and document
+
+    // ─── Wait for app frame to fully load and initial async calls to settle ──
+    before(function (done) {
+      this.timeout(12000);
+      const frame = document.getElementById('app-frame');
+      frame.addEventListener('load', () => {
+        W = frame.contentWindow;
+        D = frame.contentDocument;
+        // Allow load-time fetch calls (checkSystemStatus, initializeUI) to settle
+        setTimeout(done, 1000);
+      });
+    });
+
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SUITE 1 — UI SKIN  (DOM structure & initial visual state, no functions)
+    // ══════════════════════════════════════════════════════════════════════════
+    describe('🎨 Suite 1 — UI Skin', function () {
+
+      // ── Page scaffold ──────────────────────────────────────────────────────
+      describe('Page scaffold', function () {
+        it('document title includes "LLM Model Comparator"', function () {
+          expect(D.title).to.include('LLM Model Comparator');
+        });
+        it('h1 header element exists and mentions LLM', function () {
+          const h1 = D.querySelector('h1');
+          expect(h1).to.not.be.null;
+          expect(h1.textContent).to.include('LLM');
+        });
+        it('BACKEND constant is defined', function () {
+          expect(W.BACKEND).to.be.a('string').and.include('http');
+        });
+      });
+
+      // ── System Status Panel ────────────────────────────────────────────────
+      describe('System Status Panel', function () {
+        it('#systemStatus element exists', function () {
+          expect(D.getElementById('systemStatus')).to.not.be.null;
+        });
+        it('#hwRefreshBtn exists', function () {
+          expect(D.getElementById('hwRefreshBtn')).to.not.be.null;
+        });
+        it('#systemStatus has initial placeholder text', function () {
+          // After failed backend call it should show an error/detecting message
+          expect(D.getElementById('systemStatus').textContent.trim()).to.not.equal('');
+        });
+      });
+
+      // ── Local Model Grid ───────────────────────────────────────────────────
+      describe('Local Model Grid', function () {
+        it('#modelsGrid exists', function () {
+          expect(D.getElementById('modelsGrid')).to.not.be.null;
+        });
+        it('"Download New Model" button exists', function () {
+          const btns = [...D.querySelectorAll('button')];
+          expect(btns.some(b => b.textContent.includes('Download'))).to.be.true;
+        });
+        it('model count tip text contains C:\\AI\\Models', function () {
+          expect(D.body.textContent).to.include('C:\\AI\\Models');
+        });
+      });
+
+      // ── Online Models Section ──────────────────────────────────────────────
+      describe('Online Models Section', function () {
+        it('#onlineModelsGrid exists', function () {
+          expect(D.getElementById('onlineModelsGrid')).to.not.be.null;
+        });
+        it('#openaiKey password input exists', function () {
+          const el = D.getElementById('openaiKey');
+          expect(el).to.not.be.null;
+          expect(el.type).to.equal('password');
+        });
+        it('#claudeKey password input exists', function () {
+          expect(D.getElementById('claudeKey')).to.not.be.null;
+        });
+        it('#googleKey password input exists', function () {
+          expect(D.getElementById('googleKey')).to.not.be.null;
+        });
+      });
+
+      // ── Judge Configuration ────────────────────────────────────────────────
+      describe('Judge Configuration', function () {
+        it('#judgeModel select exists', function () {
+          expect(D.getElementById('judgeModel')).to.not.be.null;
+        });
+        it('#judgeModel has at least 4 options', function () {
+          expect(D.getElementById('judgeModel').options.length).to.be.greaterThan(3);
+        });
+        it('first option is "None (Skip Judge)"', function () {
+          expect(D.getElementById('judgeModel').options[0].value).to.equal('');
+        });
+      });
+
+      // ── Download Modal ─────────────────────────────────────────────────────
+      describe('Download Modal', function () {
+        it('#downloadModal exists', function () {
+          expect(D.getElementById('downloadModal')).to.not.be.null;
+        });
+        it('modal is hidden initially (no "show" class)', function () {
+          expect(D.getElementById('downloadModal').classList.contains('show')).to.be.false;
+        });
+        it('#llamaBanner exists inside modal', function () {
+          expect(D.getElementById('llamaBanner')).to.not.be.null;
+        });
+        it('#llamaBanner is hidden initially', function () {
+          expect(D.getElementById('llamaBanner').style.display).to.equal('none');
+        });
+        it('Hugging Face repo tab exists', function () {
+          expect([...D.querySelectorAll('.repo-tab')].some(t => t.textContent.includes('Hugging Face'))).to.be.true;
+        });
+        it('ModelScope repo tab exists', function () {
+          expect([...D.querySelectorAll('.repo-tab')].some(t => t.textContent.includes('ModelScope'))).to.be.true;
+        });
+        it('GitHub Releases tab exists', function () {
+          expect([...D.querySelectorAll('.repo-tab')].some(t => t.textContent.includes('GitHub'))).to.be.true;
+        });
+        it('ZERO Ollama tabs present', function () {
+          const tabs = [...D.querySelectorAll('.repo-tab')];
+          expect(tabs.every(t => !t.textContent.toLowerCase().includes('ollama'))).to.be.true;
+        });
+        it('#hf-repo content div exists', function () {
+          expect(D.getElementById('hf-repo')).to.not.be.null;
+        });
+        it('#hfModel text input exists', function () {
+          expect(D.getElementById('hfModel')).to.not.be.null;
+        });
+        it('#msModel text input exists', function () {
+          expect(D.getElementById('msModel')).to.not.be.null;
+        });
+        it('#ghModel text input exists', function () {
+          expect(D.getElementById('ghModel')).to.not.be.null;
+        });
+        it('#downloadBtn exists', function () {
+          expect(D.getElementById('downloadBtn')).to.not.be.null;
+        });
+        it('#progressBar exists', function () {
+          expect(D.getElementById('progressBar')).to.not.be.null;
+        });
+        it('#progressPercent exists', function () {
+          expect(D.getElementById('progressPercent')).to.not.be.null;
+        });
+        it('#progressStatus exists', function () {
+          expect(D.getElementById('progressStatus')).to.not.be.null;
+        });
+        it('#downloadProgress is hidden initially', function () {
+          expect(D.getElementById('downloadProgress').style.display).to.equal('none');
+        });
+        it('popular model suggestion buttons exist in HF tab', function () {
+          const suggestions = D.querySelectorAll('#hf-repo .suggestion');
+          expect(suggestions.length).to.be.greaterThan(0);
+        });
+      });
+
+      // ── Prompt & Run console ───────────────────────────────────────────────
+      describe('Prompt & Comparison Console', function () {
+        it('#prompt textarea exists', function () {
+          expect(D.getElementById('prompt')).to.not.be.null;
+        });
+        it('#systemPrompt textarea exists', function () {
+          expect(D.getElementById('systemPrompt')).to.not.be.null;
+        });
+        it('#runBtn exists', function () {
+          expect(D.getElementById('runBtn')).to.not.be.null;
+        });
+        it('#status element exists', function () {
+          expect(D.getElementById('status')).to.not.be.null;
+        });
+        it('#status hidden initially', function () {
+          expect(D.getElementById('status').classList.contains('show')).to.be.false;
+        });
+      });
+
+      // ── Results Section ────────────────────────────────────────────────────
+      describe('Results Section', function () {
+        it('#resultsSection exists', function () {
+          expect(D.getElementById('resultsSection')).to.not.be.null;
+        });
+        it('#resultsSection hidden initially', function () {
+          expect(D.getElementById('resultsSection').classList.contains('show')).to.be.false;
+        });
+        it('#resultsBody <tbody> exists', function () {
+          expect(D.getElementById('resultsBody')).to.not.be.null;
+        });
+        it('#metricsRow exists', function () {
+          expect(D.getElementById('metricsRow')).to.not.be.null;
+        });
+      });
+
+      // ── File Picker ────────────────────────────────────────────────────────
+      describe('File Picker', function () {
+        it('#filePicker file input exists', function () {
+          expect(D.getElementById('filePicker')).to.not.be.null;
+        });
+        it('#filePreview element exists', function () {
+          expect(D.getElementById('filePreview')).to.not.be.null;
+        });
+        it('#documentIndicator hidden initially', function () {
+          expect(D.getElementById('documentIndicator').style.display).to.equal('none');
+        });
+        it('prepend/replace/clear doc buttons hidden initially', function () {
+          expect(D.getElementById('prependBtn').style.display).to.equal('none');
+          expect(D.getElementById('replaceBtn').style.display).to.equal('none');
+          expect(D.getElementById('clearDocBtn').style.display).to.equal('none');
+        });
+      });
+
+    }); // Suite 1
+
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SUITE 2 — FUNCTION UNIT TESTS  (pure JS, no real backend needed)
+    // ══════════════════════════════════════════════════════════════════════════
+    describe('⚙️ Suite 2 — Function Units', function () {
+
+      // ── showStatus / clearStatus ───────────────────────────────────────────
+      describe('showStatus / clearStatus', function () {
+        afterEach(function () { W.clearStatus(); });
+
+        it('showStatus("msg","success") adds show + success class', function () {
+          W.showStatus('all good', 'success');
+          const el = D.getElementById('status');
+          expect(el.classList.contains('show')).to.be.true;
+          expect(el.classList.contains('success')).to.be.true;
+        });
+        it('showStatus("msg","error") adds show + error class', function () {
+          W.showStatus('oops', 'error');
+          expect(D.getElementById('status').classList.contains('error')).to.be.true;
+        });
+        it('showStatus("msg","warning") adds show + warning class', function () {
+          W.showStatus('heads up', 'warning');
+          expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+        });
+        it('showStatus renders message text in element', function () {
+          W.showStatus('hello world', 'info');
+          expect(D.getElementById('status').textContent).to.include('hello world');
+        });
+        it('clearStatus removes show class', function () {
+          W.showStatus('temp', 'info');
+          W.clearStatus();
+          expect(D.getElementById('status').classList.contains('show')).to.be.false;
+        });
+      });
+
+      // ── toggleDownloadModal ────────────────────────────────────────────────
+      describe('toggleDownloadModal', function () {
+        afterEach(function () {
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+        });
+
+        it('opens modal (adds "show")', function () {
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal();
+          expect(modal.classList.contains('show')).to.be.true;
+        });
+        it('closes modal on second call', function () {
+          const modal = D.getElementById('downloadModal');
+          if (!modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal();
+          expect(modal.classList.contains('show')).to.be.false;
+        });
+        it('shows llamaBanner when llamaInstalled = false', function () {
+          W.llamaInstalled = false;
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal(); // open
+          expect(D.getElementById('llamaBanner').style.display).to.not.equal('none');
+        });
+        it('hides llamaBanner when llamaInstalled = true', function () {
+          W.llamaInstalled = true;
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal(); // open
+          expect(D.getElementById('llamaBanner').style.display).to.equal('none');
+        });
+      });
+
+      // ── switchRepo ─────────────────────────────────────────────────────────
+      describe('switchRepo', function () {
+        before(function () {
+          // Make sure HF tab is active baseline
+          const hfBtn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('Hugging'));
+          W.switchRepo('huggingface', hfBtn);
+        });
+
+        it('switchRepo("modelscope") shows #modelscope-repo', function () {
+          const btn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('ModelScope'));
+          W.switchRepo('modelscope', btn);
+          expect(D.getElementById('modelscope-repo').style.display).to.not.equal('none');
+        });
+        it('switchRepo("modelscope") hides #hf-repo', function () {
+          expect(D.getElementById('hf-repo').style.display).to.equal('none');
+        });
+        it('clicked tab gets "active" class', function () {
+          const btn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('ModelScope'));
+          expect(btn.classList.contains('active')).to.be.true;
+        });
+        it('switchRepo("github") shows #github-repo', function () {
+          const btn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('GitHub'));
+          W.switchRepo('github', btn);
+          expect(D.getElementById('github-repo').style.display).to.not.equal('none');
+        });
+        it('switchRepo("github") hides #modelscope-repo', function () {
+          expect(D.getElementById('modelscope-repo').style.display).to.equal('none');
+        });
+        it('switchRepo("huggingface") restores HF tab', function () {
+          const btn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('Hugging'));
+          W.switchRepo('huggingface', btn);
+          expect(D.getElementById('hf-repo').style.display).to.not.equal('none');
+          expect(D.getElementById('github-repo').style.display).to.equal('none');
+        });
+      });
+
+      // ── selectModel ────────────────────────────────────────────────────────
+      describe('selectModel', function () {
+        it('fills #hfModel with the provided value', function () {
+          W.selectModel('hfModel', 'bartowski/Mistral-7B-Instruct-v0.2-GGUF');
+          expect(D.getElementById('hfModel').value).to.equal('bartowski/Mistral-7B-Instruct-v0.2-GGUF');
+        });
+        it('fills #msModel with the provided value', function () {
+          W.selectModel('msModel', 'baichuan-inc/Baichuan2-7B');
+          expect(D.getElementById('msModel').value).to.equal('baichuan-inc/Baichuan2-7B');
+        });
+        it('fills #ghModel with a GitHub URL', function () {
+          const url = 'https://github.com/user/repo/releases/download/v1/model.gguf';
+          W.selectModel('ghModel', url);
+          expect(D.getElementById('ghModel').value).to.equal(url);
+        });
+        afterEach(function () {
+          D.getElementById('hfModel').value = '';
+          D.getElementById('msModel').value = '';
+          D.getElementById('ghModel').value = '';
+        });
+      });
+
+      // ── toggleModel ────────────────────────────────────────────────────────
+      describe('toggleModel', function () {
+        let card;
+        beforeEach(function () {
+          W.selectedModels = [];
+          W.selectedModelPaths = {};
+          card = D.createElement('div');
+          card.className = 'model-card';
+          D.body.appendChild(card);
+        });
+        afterEach(function () {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          W.selectedModels = [];
+          W.selectedModelPaths = {};
+        });
+
+        it('adds model to selectedModels on first call', function () {
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          expect(W.selectedModels).to.include('local:0');
+        });
+        it('stores model path in selectedModelPaths', function () {
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          expect(W.selectedModelPaths['local:0']).to.equal('C:\\AI\\Models\\test.gguf');
+        });
+        it('adds "selected" CSS class to card element', function () {
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          expect(card.classList.contains('selected')).to.be.true;
+        });
+        it('deselects already-selected model on second call', function () {
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          expect(W.selectedModels).to.not.include('local:0');
+          expect(card.classList.contains('selected')).to.be.false;
+        });
+        it('removes path from selectedModelPaths on deselect', function () {
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          W.toggleModel('local:0', 'C:\\AI\\Models\\test.gguf', card);
+          expect(W.selectedModelPaths['local:0']).to.be.undefined;
+        });
+        it('enforces max 6 models — 7th selection is rejected', function () {
+          for (let i = 0; i < 6; i++) W.selectedModels.push(`local:${i}`);
+          const card7 = D.createElement('div');
+          W.toggleModel('local:99', 'path.gguf', card7);
+          expect(W.selectedModels.length).to.equal(6);
+          expect(card7.classList.contains('selected')).to.be.false;
+        });
+        it('max-6 rejection shows a warning status', function () {
+          for (let i = 0; i < 6; i++) W.selectedModels.push(`local:${i}`);
+          const card7 = D.createElement('div');
+          W.toggleModel('local:99', 'path.gguf', card7);
+          expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+        });
+      });
+
+      // ── populateModelsGrid ─────────────────────────────────────────────────
+      describe('populateModelsGrid', function () {
+        it('shows "No GGUF models found" placeholder when scannedModels is empty', function () {
+          W.scannedModels = [];
+          W.populateModelsGrid();
+          expect(D.getElementById('modelsGrid').textContent).to.include('No GGUF models found');
+        });
+        it('renders one card per scanned model', function () {
+          W.scannedModels = [
+            { name: 'alpha.gguf', path: 'C:\\AI\\Models\\alpha.gguf', size_gb: 4.2 },
+            { name: 'beta.gguf',  path: 'C:\\AI\\Models\\beta.gguf',  size_gb: 7.1 }
+          ];
+          W.populateModelsGrid();
+          expect(D.getElementById('modelsGrid').querySelectorAll('.model-card').length).to.equal(2);
+        });
+        it('card shows file size', function () {
+          W.scannedModels = [{ name: 'big.gguf', path: 'C:\\AI\\Models\\big.gguf', size_gb: 13.5 }];
+          W.populateModelsGrid();
+          expect(D.getElementById('modelsGrid').textContent).to.include('13.5');
+        });
+        it('card shows GGUF badge', function () {
+          W.scannedModels = [{ name: 'model.gguf', path: 'C:\\AI\\Models\\model.gguf', size_gb: 4 }];
+          W.populateModelsGrid();
+          expect(D.getElementById('modelsGrid').textContent).to.include('GGUF');
+        });
+      });
+
+      // ── clearAll ───────────────────────────────────────────────────────────
+      describe('clearAll', function () {
+        it('clears #prompt textarea', function () {
+          D.getElementById('prompt').value = 'some test prompt';
+          W.clearAll();
+          expect(D.getElementById('prompt').value).to.equal('');
+        });
+        it('clears #systemPrompt textarea', function () {
+          D.getElementById('systemPrompt').value = 'Be helpful';
+          W.clearAll();
+          expect(D.getElementById('systemPrompt').value).to.equal('');
+        });
+        it('resets selectedModels array to empty', function () {
+          W.selectedModels = ['local:0', 'local:1', 'online:gpt4'];
+          W.clearAll();
+          expect(W.selectedModels.length).to.equal(0);
+        });
+        it('hides #resultsSection', function () {
+          D.getElementById('resultsSection').classList.add('show');
+          W.clearAll();
+          expect(D.getElementById('resultsSection').classList.contains('show')).to.be.false;
+        });
+        it('hides #status', function () {
+          W.showStatus('something', 'info');
+          W.clearAll();
+          expect(D.getElementById('status').classList.contains('show')).to.be.false;
+        });
+      });
+
+      // ── displayResults ─────────────────────────────────────────────────────
+      describe('displayResults', function () {
+        afterEach(function () { W.clearAll(); });
+
+        it('renders one <tr> per result (data.responses format)', function () {
+          W.displayResults({
+            responses: [
+              { path: 'C:\\AI\\Models\\a.gguf', response: 'Hello', time_ms: 500, tokens_per_sec: 10, quality_score: 8.5 },
+              { path: 'C:\\AI\\Models\\b.gguf', response: 'World', time_ms: 800, tokens_per_sec: 7,  quality_score: 7.0 }
+            ]
+          }, null);
+          expect(D.getElementById('resultsBody').querySelectorAll('tr').length).to.equal(2);
+        });
+        it('renders one <tr> per result (data.results format)', function () {
+          W.displayResults({
+            results: [
+              { model_path: 'a.gguf', response: 'Hi', time_ms: 100, tokens_per_sec: 5, judge_score: 6 }
+            ]
+          }, 'online:gpt4');
+          expect(D.getElementById('resultsBody').querySelectorAll('tr').length).to.equal(1);
+        });
+        it('shows #resultsSection after display', function () {
+          W.displayResults({
+            responses: [{ path: 'x.gguf', response: 'ok', time_ms: 100, tokens_per_sec: 5, quality_score: 5 }]
+          }, null);
+          expect(D.getElementById('resultsSection').classList.contains('show')).to.be.true;
+        });
+        it('renders exactly 4 metric tiles', function () {
+          W.displayResults({
+            responses: [{ path: 'x.gguf', response: 'ok', time_ms: 200, tokens_per_sec: 8, quality_score: 6 }]
+          }, null);
+          expect(D.getElementById('metricsRow').querySelectorAll('.metric').length).to.equal(4);
+        });
+        it('shows "No results returned" warning when empty array', function () {
+          W.displayResults({ responses: [] }, null);
+          expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+        });
+      });
+
+      // ── getModelName ───────────────────────────────────────────────────────
+      describe('getModelName', function () {
+        it('maps Llama path to friendly name', function () {
+          expect(W.getModelName('C:\\AI\\Models\\Llama-3.2-3B.gguf')).to.include('Llama');
+        });
+        it('maps BitNet path to friendly name', function () {
+          expect(W.getModelName('C:\\AI\\BitNet\\models\\BitNet-b1.58.gguf')).to.include('BitNet');
+        });
+        it('falls back to bare filename for unknown paths', function () {
+          expect(W.getModelName('C:\\AI\\Models\\my-custom-model.gguf')).to.equal('my-custom-model');
+        });
+      });
+
+      // ── updateOnlineModelsGrid ─────────────────────────────────────────────
+      describe('updateOnlineModelsGrid', function () {
+        it('renders 6 online model cards (matching ONLINE_MODELS object)', function () {
+          W.updateOnlineModelsGrid();
+          expect(D.getElementById('onlineModelsGrid').querySelectorAll('.model-card').length)
+            .to.equal(Object.keys(W.ONLINE_MODELS).length);
+        });
+        it('all cards disabled (opacity 0.5) with no API keys', function () {
+          D.getElementById('openaiKey').value = '';
+          D.getElementById('claudeKey').value  = '';
+          D.getElementById('googleKey').value  = '';
+          W.updateOnlineModelsGrid();
+          const cards = [...D.getElementById('onlineModelsGrid').querySelectorAll('.model-card')];
+          expect(cards.every(c => c.style.opacity === '0.5')).to.be.true;
+        });
+        it('OpenAI cards enabled (opacity 1) when OpenAI key is set', function () {
+          D.getElementById('openaiKey').value = 'sk-test-key-abc123';
+          W.updateOnlineModelsGrid();
+          // First card in grid should be an OpenAI-backed card
+          const firstCard = D.getElementById('onlineModelsGrid').querySelector('.model-card');
+          expect(firstCard.style.opacity).to.equal('1');
+          D.getElementById('openaiKey').value = '';
+          W.updateOnlineModelsGrid();
+        });
+        it('cards show "API key required" warning when no key', function () {
+          D.getElementById('openaiKey').value = '';
+          W.updateOnlineModelsGrid();
+          expect(D.getElementById('onlineModelsGrid').textContent).to.include('API key required');
+        });
+      });
+
+      // ── saveOnlineKeys / loadOnlineKeys ────────────────────────────────────
+      describe('saveOnlineKeys / loadOnlineKeys', function () {
+        afterEach(function () {
+          W.localStorage.removeItem('llm_online_keys');
+          D.getElementById('openaiKey').value = '';
+          D.getElementById('claudeKey').value  = '';
+          D.getElementById('googleKey').value  = '';
+        });
+
+        it('saveOnlineKeys persists the OpenAI key', function () {
+          D.getElementById('openaiKey').value = 'sk-save-test';
+          W.saveOnlineKeys();
+          const stored = JSON.parse(W.localStorage.getItem('llm_online_keys'));
+          expect(stored.openai).to.equal('sk-save-test');
+        });
+        it('loadOnlineKeys restores saved keys into inputs', function () {
+          D.getElementById('openaiKey').value = 'sk-load-test';
+          W.saveOnlineKeys();
+          D.getElementById('openaiKey').value = '';  // wipe
+          W.loadOnlineKeys();
+          expect(D.getElementById('openaiKey').value).to.equal('sk-load-test');
+        });
+        it('clearOnlineKeys removes from localStorage', function () {
+          D.getElementById('openaiKey').value = 'sk-clear-test';
+          W.saveOnlineKeys();
+          const origConfirm = W.confirm;
+          W.confirm = () => true;   // auto-confirm
+          W.clearOnlineKeys();
+          W.confirm = origConfirm;
+          expect(W.localStorage.getItem('llm_online_keys')).to.be.null;
+        });
+        it('clearOnlineKeys does nothing when user cancels confirm', function () {
+          D.getElementById('openaiKey').value = 'sk-keep';
+          W.saveOnlineKeys();
+          const origConfirm = W.confirm;
+          W.confirm = () => false;  // cancel
+          W.clearOnlineKeys();
+          W.confirm = origConfirm;
+          const stored = JSON.parse(W.localStorage.getItem('llm_online_keys'));
+          expect(stored.openai).to.equal('sk-keep');
+        });
+      });
+
+      // ── Document injection helpers ─────────────────────────────────────────
+      describe('Document injection (prependDocumentToPrompt / replacePromptWithDocument / clearDocument)', function () {
+        beforeEach(function () {
+          W.uploadedDocument = { name: 'sample.txt', content: 'The quick brown fox', size: 19, loaded: true };
+          D.getElementById('prompt').value = 'My question here';
+        });
+        afterEach(function () {
+          W.clearDocument();
+          D.getElementById('prompt').value = '';
+        });
+
+        it('prependDocumentToPrompt prepends doc content before prompt', function () {
+          W.prependDocumentToPrompt();
+          const val = D.getElementById('prompt').value;
+          expect(val).to.include('The quick brown fox');
+          expect(val.indexOf('The quick brown fox')).to.be.lessThan(val.indexOf('My question here'));
+        });
+        it('prependDocumentToPrompt does not duplicate if called twice', function () {
+          W.prependDocumentToPrompt();
+          W.prependDocumentToPrompt();
+          const val = D.getElementById('prompt').value;
+          const count = (val.match(/The quick brown fox/g) || []).length;
+          expect(count).to.equal(1);
+        });
+        it('replacePromptWithDocument replaces prompt with doc content', function () {
+          W.replacePromptWithDocument();
+          const val = D.getElementById('prompt').value;
+          expect(val).to.include('The quick brown fox');
+          expect(val).to.not.include('My question here');
+        });
+        it('clearDocument resets uploadedDocument.loaded to false', function () {
+          W.clearDocument();
+          expect(W.uploadedDocument.loaded).to.be.false;
+        });
+        it('clearDocument hides documentIndicator', function () {
+          D.getElementById('documentIndicator').style.display = 'inline-block';
+          W.clearDocument();
+          expect(D.getElementById('documentIndicator').style.display).to.equal('none');
+        });
+        it('prependDocumentToPrompt shows warning when no doc loaded', function () {
+          W.uploadedDocument = { name: '', content: '', size: 0, loaded: false };
+          W.prependDocumentToPrompt();
+          expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+        });
+      });
+
+    }); // Suite 2
+
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // SUITE 3 — INTEGRATION  (UI + Functions + mocked fetch)
+    // ══════════════════════════════════════════════════════════════════════════
+    describe('🔗 Suite 3 — Integration', function () {
+
+      let _origFetch;
+      beforeEach(function () { _origFetch = W.fetch; });
+      afterEach(function () {
+        W.fetch = _origFetch;
+        W.clearAll();
+        W.selectedModels = [];
+        W.selectedModelPaths = {};
+        // Close modal if left open
+        const modal = D.getElementById('downloadModal');
+        if (modal.classList.contains('show')) W.toggleDownloadModal();
+      });
+
+      // ── checkSystemStatus ──────────────────────────────────────────────────
+      describe('checkSystemStatus with mocked backend', function () {
+        it('populates #systemStatus with CPU/GPU info on success', function (done) {
+          W.fetch = () => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              cpu_name: 'AMD Ryzen 9 Test', cpu_count: 16, cpu_avx2: true, cpu_avx512: true,
+              gpus: [{ name: 'Radeon Test GPU', vram_gb: 8, vendor: 'AMD', backend: 'ROCm' }],
+              memory_gb: 64, llama_cpp_version: '0.3.99', has_llama_cpp: true,
+              model_count: 3,
+              models: [
+                { name: 'alpha.gguf', path: 'C:\\AI\\Models\\alpha.gguf', size_gb: 4.2 }
+              ],
+              recommended_build: { build: 'ROCm / Vulkan (AMD GPU)', reason: 'AMD GPU found', pip: 'pip install llama-cpp-python[rocm]' }
+            })
+          });
+          W.checkSystemStatus().then(() => {
+            const txt = D.getElementById('systemStatus').textContent;
+            expect(txt).to.include('AMD Ryzen 9 Test');
+            expect(txt).to.include('Radeon Test GPU');
+            done();
+          }).catch(done);
+        });
+
+        it('sets llamaInstalled = true when llama_cpp_version present', function (done) {
+          W.fetch = () => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              cpu_name: 'CPU', cpu_count: 4, cpu_avx2: true, cpu_avx512: false,
+              gpus: [], memory_gb: 16, llama_cpp_version: '0.3.99', has_llama_cpp: true,
+              model_count: 0, models: [], recommended_build: {}
+            })
+          });
+          W.checkSystemStatus().then(() => {
+            expect(W.llamaInstalled).to.be.true;
+            done();
+          }).catch(done);
+        });
+
+        it('sets llamaInstalled = false when llama not in response', function (done) {
+          W.fetch = () => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              cpu_name: 'CPU', cpu_count: 4, cpu_avx2: false, cpu_avx512: false,
+              gpus: [], memory_gb: 8, llama_cpp_version: null, has_llama_cpp: false,
+              model_count: 0, models: [], recommended_build: {}
+            })
+          });
+          W.checkSystemStatus().then(() => {
+            expect(W.llamaInstalled).to.be.false;
+            done();
+          }).catch(done);
+        });
+
+        it('populates modelsGrid with cards from backend model list', function (done) {
+          W.fetch = () => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+              cpu_name: 'X', cpu_count: 4, cpu_avx2: true, cpu_avx512: false,
+              gpus: [], memory_gb: 16, llama_cpp_version: '0.3.0', has_llama_cpp: true,
+              model_count: 2,
+              models: [
+                { name: 'first.gguf',  path: 'C:\\AI\\Models\\first.gguf',  size_gb: 3.1 },
+                { name: 'second.gguf', path: 'C:\\AI\\Models\\second.gguf', size_gb: 5.5 }
+              ],
+              recommended_build: {}
+            })
+          });
+          W.checkSystemStatus().then(() => {
+            expect(D.getElementById('modelsGrid').querySelectorAll('.model-card').length).to.equal(2);
+            done();
+          }).catch(done);
+        });
+
+        it('shows "Backend not running" when fetch throws', function (done) {
+          W.fetch = () => Promise.reject(new Error('ECONNREFUSED'));
+          W.checkSystemStatus().then(() => {
+            expect(D.getElementById('systemStatus').textContent).to.include('Backend not running');
+            done();
+          }).catch(done);
+        });
+      });
+
+      // ── Model card click → selection ───────────────────────────────────────
+      describe('Model card selection', function () {
+        it('clicking a model card selects it and adds to selectedModels', function () {
+          W.scannedModels = [{ name: 'click-test.gguf', path: 'C:\\AI\\Models\\click-test.gguf', size_gb: 4 }];
+          W.selectedModels = [];
+          W.populateModelsGrid();
+          const card = D.querySelector('#modelsGrid .model-card');
+          expect(card).to.not.be.null;
+          card.click();
+          expect(W.selectedModels.length).to.equal(1);
+          expect(card.classList.contains('selected')).to.be.true;
+        });
+        it('clicking selected card deselects it', function () {
+          W.scannedModels = [{ name: 'toggle.gguf', path: 'C:\\AI\\Models\\toggle.gguf', size_gb: 4 }];
+          W.selectedModels = [];
+          W.populateModelsGrid();
+          const card = D.querySelector('#modelsGrid .model-card');
+          card.click(); // select
+          card.click(); // deselect
+          expect(W.selectedModels.length).to.equal(0);
+          expect(card.classList.contains('selected')).to.be.false;
+        });
+      });
+
+      // ── runComparison ──────────────────────────────────────────────────────
+      describe('runComparison', function () {
+        it('shows warning when no models selected', function (done) {
+          W.selectedModels = [];
+          D.getElementById('prompt').value = 'Test prompt';
+          W.runComparison().then(() => {
+            expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+            done();
+          }).catch(done);
+        });
+        it('shows warning when prompt is empty', function (done) {
+          W.selectedModels = ['local:0'];
+          W.selectedModelPaths = { 'local:0': 'C:\\AI\\Models\\test.gguf' };
+          D.getElementById('prompt').value = '';
+          W.runComparison().then(() => {
+            expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+            done();
+          }).catch(done);
+        });
+        it('sends correct payload and renders results on success', function (done) {
+          W.selectedModels = ['local:0'];
+          W.selectedModelPaths = { 'local:0': 'C:\\AI\\Models\\test.gguf' };
+          D.getElementById('prompt').value = 'Compare these models!';
+          let capturedBody;
+          W.fetch = (url, opts) => {
+            capturedBody = JSON.parse(opts.body);
+            return Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve({
+                responses: [
+                  { path: 'C:\\AI\\Models\\test.gguf', response: 'Test response text', time_ms: 420, tokens_per_sec: 25, quality_score: 8 }
+                ]
+              })
+            });
+          };
+          W.runComparison().then(() => {
+            expect(capturedBody.prompt).to.equal('Compare these models!');
+            expect(capturedBody.local_models).to.include('C:\\AI\\Models\\test.gguf');
+            expect(D.getElementById('resultsSection').classList.contains('show')).to.be.true;
+            expect(D.getElementById('resultsBody').querySelectorAll('tr').length).to.equal(1);
+            done();
+          }).catch(done);
+        });
+        it('shows error status when backend returns HTTP error', function (done) {
+          W.selectedModels = ['local:0'];
+          W.selectedModelPaths = { 'local:0': 'C:\\AI\\Models\\test.gguf' };
+          D.getElementById('prompt').value = 'Test';
+          W.fetch = () => Promise.resolve({ ok: false, status: 500, text: () => Promise.resolve('Internal Server Error') });
+          W.runComparison().then(() => {
+            expect(D.getElementById('status').classList.contains('error')).to.be.true;
+            done();
+          }).catch(done);
+        });
+      });
+
+      // ── Download modal flow ────────────────────────────────────────────────
+      describe('Download flow', function () {
+
+        beforeEach(function () {
+          // Reset download UI state
+          D.getElementById('downloadProgress').style.display = 'none';
+          D.getElementById('progressBar').style.width = '0%';
+          D.getElementById('progressPercent').textContent = '0%';
+          D.getElementById('progressStatus').textContent = '';
+          D.getElementById('downloadBtn').disabled = false;
+          D.getElementById('downloadBtn').textContent = '⬇️ Download Model';
+          D.getElementById('hfModel').value = '';
+          W.scannedModels = [];
+          // Ensure HF tab active
+          const hfBtn = [...D.querySelectorAll('.repo-tab')].find(t => t.textContent.includes('Hugging'));
+          W.switchRepo('huggingface', hfBtn);
+        });
+
+        it('shows warning when model name is empty', function () {
+          D.getElementById('hfModel').value = '';
+          W.startDownload();
+          expect(D.getElementById('status').classList.contains('warning')).to.be.true;
+        });
+
+        it('shows confirm dialog when model already exists locally', function () {
+          W.scannedModels = [{ name: 'mistral.gguf', path: 'C:\\AI\\Models\\mistral.gguf', size_gb: 4.1 }];
+          D.getElementById('hfModel').value = 'owner/repo/mistral.gguf';
+          let confirmCalled = false;
+          const origConfirm = W.confirm;
+          W.confirm = (msg) => { confirmCalled = true; return false; }; // Cancel
+          W.startDownload();
+          W.confirm = origConfirm;
+          expect(confirmCalled).to.be.true;
+        });
+
+        it('cancelling duplicate confirm aborts download (progress stays hidden)', function () {
+          W.scannedModels = [{ name: 'existing.gguf', path: 'C:\\AI\\Models\\existing.gguf', size_gb: 3 }];
+          D.getElementById('hfModel').value = 'owner/repo/existing.gguf';
+          const origConfirm = W.confirm;
+          W.confirm = () => false; // Cancel
+          W.startDownload();
+          W.confirm = origConfirm;
+          expect(D.getElementById('downloadProgress').style.display).to.equal('none');
+        });
+
+        it('full success flow: start → polling → done updates progressBar to 100%', function (done) {
+          this.timeout(7000);
+          let pollCount = 0;
+          W.fetch = (url, opts) => {
+            if (url.includes('__download-model')) {
+              return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, job_id: 'integ-job-1' }) });
+            }
+            if (url.includes('__download-status')) {
+              pollCount++;
+              const payload = pollCount < 2
+                ? { state: 'downloading', progress: 45, message: 'Fetching from HF… 45%' }
+                : { state: 'done',        progress: 100, message: 'Download complete', path: 'C:\\AI\\Models\\test.gguf' };
+              return Promise.resolve({ ok: true, json: () => Promise.resolve(payload) });
+            }
+            // checkSystemStatus call after done — return minimal valid response
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({
+              cpu_name: 'CPU', cpu_count: 4, cpu_avx2: true, cpu_avx512: false,
+              gpus: [], memory_gb: 16, llama_cpp_version: '0.3.0', has_llama_cpp: true,
+              model_count: 1, models: [{ name: 'test.gguf', path: 'C:\\AI\\Models\\test.gguf', size_gb: 4 }],
+              recommended_build: {}
+            })});
+          };
+          D.getElementById('hfModel').value = 'bartowski/test-GGUF/test.gguf';
+          W.startDownload();
+          // 2 polls × 1.5s = 3s, check at 5s
+          setTimeout(() => {
+            expect(D.getElementById('progressBar').style.width).to.equal('100%');
+            expect(D.getElementById('progressPercent').textContent).to.equal('100%');
+            expect(D.getElementById('progressStatus').textContent).to.include('✅');
+            done();
+          }, 5000);
+        });
+
+        it('error state shows ❌ and the real error message', function (done) {
+          this.timeout(5000);
+          W.fetch = (url, opts) => {
+            if (url.includes('__download-model')) {
+              return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, job_id: 'err-job-1' }) });
+            }
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({
+              state: 'error', progress: 0, message: 'Repository not found on HF', error: 'Repository not found on HF'
+            })});
+          };
+          D.getElementById('hfModel').value = 'owner/nonexistent-model/file.gguf';
+          W.startDownload();
+          setTimeout(() => {
+            const statusText = D.getElementById('progressStatus').textContent;
+            expect(statusText).to.include('❌');
+            expect(statusText).to.include('Repository not found');
+            done();
+          }, 2500);
+        });
+
+        it('intermediate polling updates show in-progress percentage', function (done) {
+          this.timeout(4000);
+          let pollCount = 0;
+          W.fetch = (url) => {
+            if (url.includes('__download-model')) {
+              return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, job_id: 'pct-job' }) });
+            }
+            if (url.includes('__download-status')) {
+              pollCount++;
+              // Stay in downloading state for 3 polls
+              return Promise.resolve({ ok: true, json: () => Promise.resolve({
+                state: 'downloading', progress: pollCount * 20, message: `Downloading… ${pollCount * 20}%`
+              })});
+            }
+            return Promise.reject(new Error('unexpected'));
+          };
+          D.getElementById('hfModel').value = 'owner/repo/test.gguf';
+          W.startDownload();
+          // After first poll (~1.5s), progress should be 20%
+          setTimeout(() => {
+            const pct = parseInt(D.getElementById('progressBar').style.width);
+            expect(pct).to.be.greaterThan(0);
+            expect(pct).to.be.lessThan(100);
+            done();
+          }, 2000);
+        });
+      });
+
+      // ── llamaBanner in modal ───────────────────────────────────────────────
+      describe('llamaBanner visibility on modal open', function () {
+        afterEach(function () {
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+        });
+
+        it('banner visible when llamaInstalled=false and modal opens', function () {
+          W.llamaInstalled = false;
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal(); // open
+          expect(D.getElementById('llamaBanner').style.display).to.not.equal('none');
+        });
+        it('banner hidden when llamaInstalled=true and modal opens', function () {
+          W.llamaInstalled = true;
+          const modal = D.getElementById('downloadModal');
+          if (modal.classList.contains('show')) W.toggleDownloadModal();
+          W.toggleDownloadModal(); // open
+          expect(D.getElementById('llamaBanner').style.display).to.equal('none');
+        });
+      });
+
+    }); // Suite 3
+
+    // ─── Auto-run ─────────────────────────────────────────────────────────────
+    // Runs automatically once the before() promise resolves.
+    // Click "Re-run All Tests" button to run again.
+    mocha.run(function (failures) {
+      document.getElementById('run-btn').disabled = false;
+    });
+    document.getElementById('run-btn').disabled = true; // disabled during first run
+  </script>
+</body>
+</html>

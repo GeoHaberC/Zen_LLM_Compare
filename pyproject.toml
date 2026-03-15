@@ -1,0 +1,46 @@
+[project]
+name = "zen-llm-compare"
+version = "0.1.0"
+description = "Local LLM model comparator with judge scoring and GPU acceleration"
+requires-python = ">=3.10"
+dependencies = [
+    "psutil==7.2.1",
+    "huggingface_hub==0.36.0",
+    "llama-cpp-python==0.3.16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "bandit>=1.7",
+    "pyright>=1.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+    "__pycache__", ".git", ".venv", "venv", "node_modules",
+    ".ruff_cache", ".pytest_cache", "dist", "build",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.bandit]
+exclude_dirs = [".venv", "venv", "__pycache__", "node_modules", "tests"]
+skips = ["B603", "B607"]  # subprocess with shell=False is fine
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
