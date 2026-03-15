@@ -1,5 +1,11 @@
 # Zen LLM Compare
 
+[![GitHub Stars](https://img.shields.io/github/stars/GeoHaberC/Zen_LLM_Compare?style=social)](https://github.com/GeoHaberC/Zen_LLM_Compare/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/GeoHaberC/Zen_LLM_Compare?style=social)](https://github.com/GeoHaberC/Zen_LLM_Compare/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/GeoHaberC/Zen_LLM_Compare)](https://github.com/GeoHaberC/Zen_LLM_Compare/issues)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+
 > **Run the same prompt through multiple local LLMs simultaneously — speed, quality, and RAM, ranked side-by-side.**
 
 Zen LLM Compare is a self-hosted, zero-cloud benchmarking tool for local GGUF language models.  
