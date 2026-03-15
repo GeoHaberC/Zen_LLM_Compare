@@ -12,19 +12,23 @@ Endpoints:
     POST /__comparison/mixed           → {local_models, online_models, prompt, ...} → results
 """
 
+import ipaddress
 import json
 import os
+import re
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from typing import Any
+from urllib.parse import urlparse
 
 # Enable Vulkan GPU backend for llama-cpp-python (AMD Radeon / any Vulkan GPU)
 # Must be set before llama_cpp is imported. Has no effect if Vulkan is absent.
-if 'GGML_VK_VISIBLE_DEVICES' not in os.environ:
-    os.environ['GGML_VK_VISIBLE_DEVICES'] = '0'
+# Supports multi-GPU: set GGML_VK_VISIBLE_DEVICES=0,1 for two GPUs.
+_vk_devices = os.environ.get('GGML_VK_VISIBLE_DEVICES', '0')
+os.environ['GGML_VK_VISIBLE_DEVICES'] = _vk_devices
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -371,12 +375,310 @@ def get_system_info(model_dirs: list[str]) -> dict:
     }
 
 
+# ─ Token counting (actual tokenizer) ─────────────────────────────────────────
+
+# Shared lightweight tokenizer (loaded once, no model weights needed).
+# Falls back to a reasonable heuristic when llama_cpp is unavailable.
+_shared_tokenizer = None
+_tokenizer_lock = threading.Lock()
+
+
+def _get_tokenizer():
+    """Return a tokenizer callable(text→list[int]).  Thread-safe, lazy-loaded."""
+    global _shared_tokenizer
+    if _shared_tokenizer is not None:
+        return _shared_tokenizer
+
+    with _tokenizer_lock:
+        if _shared_tokenizer is not None:
+            return _shared_tokenizer
+
+        # Prefer tiktoken (fast, pure-Python, no model file needed)
+        try:
+            import tiktoken
+            enc = tiktoken.get_encoding("cl100k_base")
+            _shared_tokenizer = enc.encode
+            return _shared_tokenizer
+        except Exception:
+            pass
+
+        # Fallback: regex-based approximation (≈1.3 tokens per word)
+        _tok_re = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?\w+| ?\d+| ?[^\s\w]+|\s+""")
+
+        def _regex_tokenize(text: str) -> list:
+            return _tok_re.findall(text)
+
+        _shared_tokenizer = _regex_tokenize
+        return _shared_tokenizer
+
+
+def count_tokens(text: str, model_path: str | None = None) -> int:
+    """Count tokens in *text* using the best available tokenizer.
+
+    Uses tiktoken or a regex approximation — never loads a model file
+    (too slow for inline use).
+    """
+    if not text:
+        return 0
+    tokenizer = _get_tokenizer()
+    return len(tokenizer(text))
+
+
+# ─ Judge score extraction (robust, multi-fallback) ────────────────────────────
+
+def extract_judge_scores(raw_text: str) -> dict:
+    """Extract evaluation scores from judge LLM output.
+
+    Handles:
+      1. Clean JSON
+      2. JSON in markdown fences
+      3. Nested JSON ({"evaluation": {...}})
+      4. Partial / malformed JSON
+      5. Natural-language scores ("overall: 8/10")
+      6. Total garbage → {"overall": 0}
+
+    Returns a dict always containing at least the key ``overall`` (0-10).
+    """
+    if not raw_text or not raw_text.strip():
+        return {"overall": 0}
+
+    raw = raw_text.strip()
+
+    # ── Step 1: try markdown fences first ────────────────────────────────────
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    json_str = fence_match.group(1) if fence_match else raw
+
+    # ── Step 2: try strict JSON parse ────────────────────────────────────────
+    parsed = _try_json(json_str)
+
+    # ── Step 3: find first { ... } in the raw text ──────────────────────────
+    if parsed is None:
+        brace_match = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
+        if brace_match:
+            parsed = _try_json(brace_match.group(0))
+
+    # ── Step 4: handle nested JSON ───────────────────────────────────────────
+    if parsed is not None:
+        if "overall" not in parsed:
+            # Check for nesting: {"evaluation": {"overall": 8, ...}}
+            for v in parsed.values():
+                if isinstance(v, dict) and "overall" in v:
+                    parsed = v
+                    break
+
+    # ── Step 5: regex fallback from natural language ─────────────────────────
+    if parsed is None:
+        parsed = _extract_scores_regex(raw)
+
+    # ── Step 6: normalise and clamp ──────────────────────────────────────────
+    result = _normalise_scores(parsed or {})
+    return result
+
+
+def _try_json(text: str) -> dict | None:
+    """Try to json.loads *text*, return dict or None."""
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Try fixing common issues: unquoted keys
+    try:
+        fixed = re.sub(r'(?<={|,)\s*(\w+)\s*:', r' "\1":', text)
+        obj = json.loads(fixed)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    return None
+
+
+def _extract_scores_regex(text: str) -> dict:
+    """Extract scores from natural-language judge output."""
+    result: dict = {}
+    lower = text.lower()
+
+    # Match patterns: "overall score: 8", "overall: 8/10", "overall 8 out of 10"
+    patterns = [
+        (r"overall[\s:]+(\d+(?:\.\d+)?)\s*(?:/\s*10|out\s+of\s+10)?", "overall"),
+        (r"accuracy[\s:]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?", "accuracy"),
+        (r"reasoning[\s:]+(\d+(?:\.\d+)?)\s*(?:/\s*10)?", "reasoning"),
+    ]
+    for pattern, key in patterns:
+        m = re.search(pattern, lower)
+        if m:
+            result[key] = float(m.group(1))
+
+    # If no overall but we found other scores, average them
+    if "overall" not in result and result:
+        nums = [v for v in result.values() if isinstance(v, (int, float))]
+        if nums:
+            result["overall"] = round(sum(nums) / len(nums), 1)
+
+    # Absolute fallback: any standalone number 0-10 near "score"
+    if "overall" not in result:
+        m = re.search(r"score[:\s]*(\d+(?:\.\d+)?)", lower)
+        if m:
+            result["overall"] = float(m.group(1))
+
+    if "overall" not in result:
+        result["overall"] = 0
+
+    return result
+
+
+def _normalise_scores(d: dict) -> dict:
+    """Ensure 'overall' exists, parse string scores, clamp to 0-10."""
+    result: dict = {}
+    for k, v in d.items():
+        if isinstance(v, str):
+            # Handle "8/10" format
+            m = re.match(r"(\d+(?:\.\d+)?)\s*/\s*\d+", v)
+            if m:
+                v = float(m.group(1))
+            else:
+                try:
+                    v = float(v)
+                except (ValueError, TypeError):
+                    result[k] = v
+                    continue
+        if isinstance(v, (int, float)):
+            v = max(0.0, min(10.0, float(v)))
+        result[k] = v
+
+    if "overall" not in result:
+        # Try to compute from other numeric scores
+        nums = [v for v in result.values() if isinstance(v, (int, float))]
+        result["overall"] = round(sum(nums) / len(nums), 1) if nums else 0
+
+    return result
+
+
+# ─ URL validation (SSRF prevention) ──────────────────────────────────────────
+
+# Allowed HTTPS hosts for model downloads
+_ALLOWED_DOWNLOAD_HOSTS = {
+    "huggingface.co",
+    "cdn-lfs.huggingface.co",
+    "cdn-lfs-us-1.huggingface.co",
+    "github.com",
+    "objects.githubusercontent.com",
+    "releases.githubusercontent.com",
+    "gitlab.com",
+    "ollama.com",
+}
+
+
+def validate_download_url(url: str) -> bool:
+    """Validate a download URL for safety (prevent SSRF).
+
+    Returns True only if the URL:
+      - Uses HTTPS scheme
+      - Targets an allowed host
+      - Does not resolve to a private/loopback IP
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    # Only HTTPS allowed
+    if parsed.scheme not in ("https",):
+        return False
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        return False
+
+    # Block loopback and private IPs
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_reserved:
+            return False
+    except ValueError:
+        # Not an IP literal — that's fine, check hostname
+        pass
+
+    # Block localhost names
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"):
+        return False
+
+    # Check against allowed hosts
+    if hostname not in _ALLOWED_DOWNLOAD_HOSTS:
+        return False
+
+    return True
+
+
 # ─ Download job tracking ─────────────────────────────────────────────────────
 _download_jobs: dict[str, dict] = {}  # job_id → {state, progress, path, error}
 _download_lock = threading.Lock()
 # ─ Install job tracking ─────────────────────────────────────────────
 _install_jobs: dict[str, dict] = {}  # job_id → {state, log, error, status_text}
 _install_lock = threading.Lock()
+
+
+# ─ Input limits & defaults ────────────────────────────────────────────────────
+MAX_PROMPT_TOKENS = 8192  # reject comparison prompts larger than this
+DEFAULT_INFERENCE_TIMEOUT = 300  # seconds; overridable per-request
+MAX_INFERENCE_TIMEOUT = 1800     # hard ceiling (30 min for reasoning models)
+
+
+# ─ Rate limiting ──────────────────────────────────────────────────────────────
+
+class _RateLimiter:
+    """Simple per-IP sliding-window rate limiter.  Thread-safe."""
+
+    def __init__(self, max_requests: int = 30, window_sec: float = 60.0):
+        self._max = max_requests
+        self._window = window_sec
+        self._lock = threading.Lock()
+        self._hits: dict[str, list[float]] = {}  # ip → [timestamps]
+
+    def allow(self, ip: str) -> bool:
+        now = time.time()
+        cutoff = now - self._window
+        with self._lock:
+            stamps = self._hits.get(ip, [])
+            stamps = [t for t in stamps if t > cutoff]
+            if len(stamps) >= self._max:
+                self._hits[ip] = stamps
+                return False
+            stamps.append(now)
+            self._hits[ip] = stamps
+            return True
+
+    def remaining(self, ip: str) -> int:
+        now = time.time()
+        cutoff = now - self._window
+        with self._lock:
+            stamps = [t for t in self._hits.get(ip, []) if t > cutoff]
+            return max(0, self._max - len(stamps))
+
+
+# Global rate limiter: 30 requests/min for heavy endpoints
+_rate_limiter = _RateLimiter(max_requests=30, window_sec=60.0)
+
+
+def _is_safe_model_path(path: str, model_dirs: list[str]) -> bool:
+    """Check that *path* is a .gguf file inside one of *model_dirs*.
+
+    Prevents path-traversal attacks (e.g. loading /etc/passwd via the API).
+    """
+    if not path or not path.lower().endswith(".gguf"):
+        return False
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return False
+    for d in model_dirs:
+        try:
+            if real.startswith(os.path.realpath(d) + os.sep):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 # ─ Model Comparator Handler ─────────────────────────────────────────────────
@@ -396,6 +698,14 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             self._handle_system_info()
         elif self.path == "/__health":
             self._send_json(200, {"ok": True, "ts": time.time()})
+        elif self.path == "/__config":
+            self._send_json(200, {
+                "vk_devices": os.environ.get("GGML_VK_VISIBLE_DEVICES", "0"),
+                "default_inference_timeout": DEFAULT_INFERENCE_TIMEOUT,
+                "max_inference_timeout": MAX_INFERENCE_TIMEOUT,
+                "max_prompt_tokens": MAX_PROMPT_TOKENS,
+                "rate_limit": {"max_requests": _rate_limiter._max, "window_sec": _rate_limiter._window},
+            })
         elif self.path.startswith("/__download-status"):
             self._handle_download_status()
         elif self.path.startswith("/__install-status"):
@@ -448,6 +758,9 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(404, {"error": "Not found"})
 
+    def _client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else "unknown"
+
     def do_POST(self) -> None:
         try:
             content_length = int(self.headers.get("Content-Length", 0))
@@ -456,6 +769,17 @@ class ComparatorHandler(BaseHTTPRequestHandler):
         except Exception:
             self._send_json(400, {"error": "Invalid JSON"})
             return
+
+        # Rate-limit heavy POST endpoints
+        if self.path in ("/__comparison/mixed", "/__chat"):
+            if not _rate_limiter.allow(self._client_ip()):
+                remaining = _rate_limiter.remaining(self._client_ip())
+                self._send_json(429, {
+                    "error": "Too many requests. Please wait a moment.",
+                    "retry_after": 60,
+                    "remaining": remaining,
+                })
+                return
 
         if self.path == "/__comparison/mixed":
             self._handle_comparison(data)
@@ -554,12 +878,38 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             judge_model = data.get("judge_model")
             judge_system_prompt = data.get("judge_system_prompt", "")
             system_prompt = data.get("system_prompt", "You are a helpful assistant.")
+
+            # ── Input validation ──────────────────────────────────────────
+            # Reject oversized prompts (DoS prevention)
+            if count_tokens(prompt) > MAX_PROMPT_TOKENS:
+                self._send_json(400, {
+                    "error": f"Prompt too large (>{MAX_PROMPT_TOKENS} tokens). Please shorten it."
+                })
+                return
+
+            # Validate all model paths are inside configured model_dirs
+            safe_models = [
+                p for p in local_models
+                if _is_safe_model_path(p, self.model_dirs)
+            ]
+            if len(safe_models) != len(local_models):
+                rejected = len(local_models) - len(safe_models)
+                print(f"[compare] WARN rejected {rejected} model path(s) outside model_dirs")
+
+            # Clamp inference timeout to safe range
+            req_timeout = min(
+                max(10, int(data.get("inference_timeout", DEFAULT_INFERENCE_TIMEOUT))),
+                MAX_INFERENCE_TIMEOUT,
+            )
             params = {
                 "n_ctx": int(data.get("n_ctx", 4096)),
                 "max_tokens": int(data.get("max_tokens", 512)),
                 "temperature": float(data.get("temperature", 0.7)),
+                "top_p": float(data.get("top_p", 0.95)),
+                "repeat_penalty": float(data.get("repeat_penalty", 1.1)),
+                "inference_timeout": req_timeout,
             }
-            responses = self._run_local_comparisons(prompt, system_prompt, local_models, params)
+            responses = self._run_local_comparisons(prompt, system_prompt, safe_models, params)
 
             # ── Apply judge scoring if a judge model was selected ──────────
             if judge_model and local_models:
@@ -599,6 +949,9 @@ class ComparatorHandler(BaseHTTPRequestHandler):
         n_ctx = params.get("n_ctx", 4096)
         max_tokens = params.get("max_tokens", 512)
         temperature = params.get("temperature", 0.7)
+        top_p = params.get("top_p", 0.95)
+        repeat_penalty = params.get("repeat_penalty", 1.1)
+        inference_timeout = params.get("inference_timeout", DEFAULT_INFERENCE_TIMEOUT)
 
         try:
             import llama_cpp
@@ -653,6 +1006,8 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                     ],
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    top_p=top_p,
+                    repeat_penalty=repeat_penalty,
                     stream=True,
                 ):
                     delta = chunk["choices"][0].get("delta", {}).get("content", "")  # type: ignore[index]
@@ -660,12 +1015,15 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                         if not ttft_ms:
                             ttft_ms = (time.time() - t0) * 1000
                         chunks.append(delta)
+                    # Enforce per-model inference timeout
+                    if (time.time() - t0) > inference_timeout:
+                        chunks.append("\n\n[⏱ Inference timed out]")
+                        break
 
                 elapsed_ms = (time.time() - t0) * 1000
                 response_text = "".join(chunks)
-                # Approximate token count from characters (llama_cpp streaming
-                # does not expose usage in stream mode without extra config)
-                completion_tokens = max(1, len(response_text.split()))
+                # Use actual tokenizer for accurate token count
+                completion_tokens = max(1, count_tokens(response_text))
                 tps = completion_tokens / (elapsed_ms / 1000) if elapsed_ms > 0 else 0
 
                 ram_after = (
@@ -772,32 +1130,37 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                     f"Original question: {original_prompt}\n\n"
                     f"Model response:\n{r.get('response', '')}"
                 )
-                try:
-                    out = llm.create_chat_completion(
-                        messages=[
-                            {"role": "system", "content": judge_system_prompt},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        max_tokens=512,
-                        temperature=0.1,
-                        stream=False,
-                    )
-                    raw = out["choices"][0]["message"]["content"].strip()  # type: ignore[index]
-                    # Extract JSON block if wrapped in markdown fences
-                    if "```" in raw:
-                        import re
-
-                        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-                        if m:
-                            raw = m.group(1)
-                    jd = json.loads(raw)
-                    score = float(jd.get("overall", jd.get("score", 0)))
-                    r["judge_score"] = score
-                    r["quality_score"] = score
-                    r["judge_detail"] = jd
-                    print(f"[judge] OK {r['model']}  score={score}")
-                except Exception as je:
-                    print(f"[judge] WARN failed to score {r['model']}: {je}")
+                scored = False
+                for attempt in range(2):  # retry once on failure
+                    try:
+                        sys_prompt = judge_system_prompt if attempt == 0 else (
+                            "Rate the response quality 0-10. Output ONLY a JSON "
+                            'object: {"overall": <number>}'
+                        )
+                        out = llm.create_chat_completion(
+                            messages=[
+                                {"role": "system", "content": sys_prompt},
+                                {"role": "user", "content": user_msg},
+                            ],
+                            max_tokens=512,
+                            temperature=0.1,
+                            stream=False,
+                        )
+                        raw = out["choices"][0]["message"]["content"].strip()  # type: ignore[index]
+                        jd = extract_judge_scores(raw)
+                        score = float(jd.get("overall", 0))
+                        r["judge_score"] = score
+                        r["quality_score"] = score
+                        r["judge_detail"] = jd
+                        print(f"[judge] OK {r['model']}  score={score}")
+                        scored = True
+                        break
+                    except Exception as je:
+                        print(f"[judge] WARN attempt {attempt+1} failed for {r['model']}: {je}")
+                if not scored:
+                    r["judge_score"] = 0
+                    r["quality_score"] = 0
+                    r["judge_detail"] = {"overall": 0, "error": "Judge failed after retries"}
         finally:
             del llm
             gc.collect()
@@ -806,7 +1169,11 @@ class ComparatorHandler(BaseHTTPRequestHandler):
     def _handle_chat(self, data: dict) -> None:
         model_path = data.get("model_path", "").strip()
         if not model_path or not os.path.isfile(model_path):
-            self._send_json(400, {"error": f"Model file not found: {model_path}"})
+            self._send_json(400, {"error": "Model file not found"})
+            return
+        # Validate path is inside configured model directories
+        if not _is_safe_model_path(model_path, self.model_dirs):
+            self._send_json(403, {"error": "Model path not allowed"})
             return
         system = data.get("system", "You are a helpful assistant.")
         messages = data.get("messages", [])
@@ -839,7 +1206,15 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
 
     def _cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        # Allow localhost origins (any port), file:// (null), and empty (same-origin)
+        if origin in ("", "null") or re.match(
+            r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", origin
+        ):
+            allowed = origin if origin and origin != "null" else "http://127.0.0.1:8123"
+            self.send_header("Access-Control-Allow-Origin", allowed)
+            self.send_header("Vary", "Origin")
+        # External origins: omit ACAO header → browser blocks the request
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -868,7 +1243,13 @@ def _run_download(job_id: str, model: str, dest: str) -> None:
         from huggingface_hub import hf_hub_download, snapshot_download
 
         # Determine repo_id and filename
-        if model.lower().startswith("http"):  # nosec B310 — URL validated by caller
+        if model.lower().startswith("http"):  # nosec B310 — URL validated below
+            # Validate URL for SSRF prevention
+            if not validate_download_url(model):
+                _upd(state="error", progress=0,
+                     message="Download URL not allowed (must be HTTPS from trusted hosts)",
+                     error="URL validation failed")
+                return
             # Direct URL — stream download with progress
             import urllib.request as _ur
 

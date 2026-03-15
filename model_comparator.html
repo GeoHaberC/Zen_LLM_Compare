@@ -518,6 +518,18 @@ body { font-family: 'Inter', sans-serif; }
               <span id="paramTempLabel" class="text-[10px] text-slate-400">(Balanced)</span>
             </label>
             <label class="flex items-center gap-1.5 text-[11px]">
+              <span class="text-slate-500 font-semibold">🎯 Top-P</span>
+              <input type="range" id="paramTopP" min="0" max="1" step="0.05" value="0.95" class="w-20 accent-primary" oninput="document.getElementById('paramTopPVal').textContent=parseFloat(this.value).toFixed(2);"/>
+              <span id="paramTopPVal" class="font-mono font-bold text-primary w-7 text-right">0.95</span>
+            </label>
+            <label class="flex items-center gap-1.5 text-[11px]">
+              <span class="text-slate-500 font-semibold">🔁 Repeat</span>
+              <input type="range" id="paramRepeat" min="1" max="2" step="0.05" value="1.1" class="w-20 accent-primary" oninput="document.getElementById('paramRepeatVal').textContent=parseFloat(this.value).toFixed(2);"/>
+              <span id="paramRepeatVal" class="font-mono font-bold text-primary w-7 text-right">1.10</span>
+            </label>
+          </div>
+          <div class="flex items-center gap-4 flex-wrap">
+            <label class="flex items-center gap-1.5 text-[11px]">
               <span class="text-slate-500 font-semibold">📏 Max tokens</span>
               <select id="paramMaxTokens" class="bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-[11px] px-1.5 py-0.5 focus:ring-1 focus:ring-primary outline-none">
                 <option value="128">128</option><option value="256">256</option><option value="512" selected>512</option>
@@ -531,9 +543,16 @@ body { font-family: 'Inter', sans-serif; }
                 <option value="16384">16K</option><option value="32768">32K (slow)</option>
               </select>
             </label>
+            <label class="flex items-center gap-1.5 text-[11px]">
+              <span class="text-slate-500 font-semibold">⏱ Timeout</span>
+              <select id="paramTimeout" class="bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded text-[11px] px-1.5 py-0.5 focus:ring-1 focus:ring-primary outline-none">
+                <option value="60">1 min</option><option value="120">2 min</option><option value="300" selected>5 min</option>
+                <option value="600">10 min</option><option value="900">15 min</option><option value="1800">30 min (reasoning)</option>
+              </select>
+            </label>
             <span id="paramPresetNote" class="text-[10px] text-emerald-500 font-semibold hidden">✓ Preset applied</span>
           </div>
-          <div class="text-[10px] text-slate-400">Auto-set when catalog card selected. <span class="text-amber-500 font-semibold">Reasoning</span> = temp 0, 2048 tokens. <span class="text-blue-500 font-semibold">Code</span> = temp 0.1.</div>
+          <div class="text-[10px] text-slate-400">Auto-set when catalog card selected. <span class="text-amber-500 font-semibold">Reasoning</span> = temp 0, 2048 tokens, 30 min timeout. <span class="text-blue-500 font-semibold">Code</span> = temp 0.1.</div>
         </div>
       </div>
     </div>
@@ -840,7 +859,21 @@ function toggleTheme() {
   const isDark = document.documentElement.classList.contains('dark');
   document.getElementById('themeIcon').textContent = isDark ? 'light_mode' : 'dark_mode';
   document.getElementById('themeLabel').textContent = isDark ? 'Light' : 'Dark';
+  try { localStorage.setItem('theme', isDark ? 'dark' : 'light'); } catch {}
 }
+// Restore saved theme on load
+(function _restoreTheme() {
+  try {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light') {
+      document.documentElement.classList.remove('dark');
+      const icon = document.getElementById('themeIcon');
+      const label = document.getElementById('themeLabel');
+      if (icon) icon.textContent = 'dark_mode';
+      if (label) label.textContent = 'Dark';
+    }
+  } catch {}
+})();
 
 function toggleLangMenu() {
   const menu = document.getElementById('langDropdownMenu');
@@ -1412,7 +1445,10 @@ async function runComparison() {
       system_prompt: document.getElementById('systemPrompt').value || 'You are a helpful assistant.',
       max_tokens: parseInt(document.getElementById('paramMaxTokens')?.value || '512'),
       temperature: parseFloat(document.getElementById('paramTemp')?.value || '0.7'),
+      top_p: parseFloat(document.getElementById('paramTopP')?.value || '0.95'),
+      repeat_penalty: parseFloat(document.getElementById('paramRepeat')?.value || '1.1'),
       n_ctx: parseInt(document.getElementById('paramCtx')?.value || '8192'),
+      inference_timeout: parseInt(document.getElementById('paramTimeout')?.value || '300'),
       judge_model: judgeModel || null,
       judge_template: document.getElementById('judgeTemplate')?.value || 'general',
       judge_system_prompt: getJudgeSystemPrompt(),
@@ -1424,7 +1460,7 @@ async function runComparison() {
       const k = getStoredKeys();
       body.api_keys = { openai: k.openai||'', anthropic: k.claude||'', google: k.google||'' };
     }
-    const r = await fetch(`${BACKEND}/__comparison/mixed`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    const r = await fetch(`${BACKEND}/__comparison/mixed`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal: AbortSignal.timeout(600000) });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
     const data = await r.json();
     displayResults(data, judgeModel);
@@ -1518,8 +1554,8 @@ function displayResults(data, judgeModel) {
     const safety        = jd.safety       ?? null;
 
     return `<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
-      <td class="px-4 py-2.5 font-semibold text-[11px]">${name}</td>
-      <td class="px-4 py-2.5 text-slate-500 text-[10px] max-w-xs truncate" title="${(r.response||'').replace(/"/g,'&quot;')}">${preview}…</td>
+      <td class="px-4 py-2.5 font-semibold text-[11px]">${escHtml(name)}</td>
+      <td class="px-4 py-2.5 text-slate-500 text-[10px] max-w-xs truncate" title="${escHtml(r.response||'')}">${escHtml(preview)}…</td>
       <td class="px-4 py-2.5 font-mono text-[10px] ${ttftColor(r.ttft_ms)}">${ttft}</td>
       <td class="px-4 py-2.5 font-mono text-[10px]">${total}</td>
       <td class="px-4 py-2.5 font-mono text-[10px]">${tps}</td>
@@ -2134,9 +2170,17 @@ function selectCatalogCard(id) {
       const cx = document.getElementById('paramCtx');
       const pn = document.getElementById('paramPresetNote');
       const tl = document.getElementById('paramTempLabel');
+      const tp = document.getElementById('paramTopP');
+      const tpv = document.getElementById('paramTopPVal');
+      const rp = document.getElementById('paramRepeat');
+      const rpv = document.getElementById('paramRepeatVal');
+      const to = document.getElementById('paramTimeout');
       if (te) { te.value = p.temperature; if (tv) tv.textContent = parseFloat(p.temperature).toFixed(2); }
       if (mt) mt.value = p.max_tokens;
       if (cx) cx.value = Math.min(p.n_ctx || 8192, 32768);
+      if (tp && p.top_p != null) { tp.value = p.top_p; if (tpv) tpv.textContent = parseFloat(p.top_p).toFixed(2); }
+      if (rp && p.repeat_penalty != null) { rp.value = p.repeat_penalty; if (rpv) rpv.textContent = parseFloat(p.repeat_penalty).toFixed(2); }
+      if (to && p.inference_timeout != null) to.value = p.inference_timeout;
       if (pn) { pn.classList.remove('hidden'); setTimeout(() => pn.classList.add('hidden'), 2500); }
       if (tl) { const v=p.temperature; tl.textContent = v<0.2?'(Deterministic)':v<0.5?'(Precise)':v<0.9?'(Balanced)':v<1.2?'(Creative)':'(Wild)'; }
     }
@@ -2891,6 +2935,7 @@ async function sendZenaMsg() {
 
   _appendZenaMsg('user', msg);
   _zenaChatHistory.push({ role: 'user', content: msg });
+  while (_zenaChatHistory.length > 40) _zenaChatHistory.shift();
   _showZenaTyping();
   _zenaSetBusy(true);
   try {
