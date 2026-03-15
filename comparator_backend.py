@@ -306,7 +306,7 @@ def scan_models(model_dirs: list[str]) -> list[dict]:
                     stem.endswith(f"-{q}") or f"_{q}." in fname.lower()
                     for q in _INCOMPATIBLE_QUANT_SUFFIXES
                 ):
-                    print(f"[scan] ⚠ Skipping incompatible quant: {fname}")
+                    print(f"[scan] SKIP incompatible quant: {fname}")
                     continue
 
                 full_path = os.path.join(d, fname)
@@ -689,7 +689,7 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                 )
             except Exception as exc:
                 elapsed_ms = (time.time() - t0) * 1000
-                print(f"[compare] ❌ {model_name}: {exc}")
+                print(f"[compare] ERROR {model_name}: {exc}")
                 results.append(
                     {
                         "model": model_name,
@@ -790,9 +790,9 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                     r["judge_score"] = score
                     r["quality_score"] = score
                     r["judge_detail"] = jd
-                    print(f"[judge] ✅ {r['model']}  score={score}")
+                    print(f"[judge] OK {r['model']}  score={score}")
                 except Exception as je:
-                    print(f"[judge] ⚠ failed to score {r['model']}: {je}")
+                    print(f"[judge] WARN failed to score {r['model']}: {je}")
         finally:
             del llm
             gc.collect()
@@ -970,8 +970,19 @@ def _run_install(job_id: str, pip_cmd: str) -> None:
 
 def run_server(port: int = 8123) -> None:
     """Start the HTTP server."""
+    # Ensure emoji/unicode in log lines don't crash on Windows cp1252 consoles
+    if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+        try:
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+        except Exception:
+            pass
     server = ThreadingHTTPServer(("127.0.0.1", port), ComparatorHandler)
-    print(f"✅ Comparator backend listening on http://127.0.0.1:{port}")
+    print(f"[OK] Comparator backend listening on http://127.0.0.1:{port}")
     print("   System info: /__system-info")
     print("   Comparison:  /__comparison/mixed")
     server.serve_forever()
