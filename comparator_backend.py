@@ -21,6 +21,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from typing import Any
 
+# Enable Vulkan GPU backend for llama-cpp-python (AMD Radeon / any Vulkan GPU)
+# Must be set before llama_cpp is imported. Has no effect if Vulkan is absent.
+if 'GGML_VK_VISIBLE_DEVICES' not in os.environ:
+    os.environ['GGML_VK_VISIBLE_DEVICES'] = '0'
+
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle each request in a separate thread so inference doesn't block the UI."""
