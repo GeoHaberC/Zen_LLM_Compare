@@ -232,6 +232,7 @@ body { font-family: 'Inter', sans-serif; }
           <th class="px-2 py-1.5 cursor-pointer select-none hover:text-primary group" onclick="sortModels('quant')" title="Quantization — lower bits = smaller/faster, higher bits = better quality">
             <span class="flex items-center gap-1">Q <span id="sort-quant" class="opacity-40 group-hover:opacity-100">↕</span></span>
           </th>
+          <th class="px-1 py-1.5 text-[9px]" title="Fitness: how well this model fits your hardware">Fit</th>
         </tr>
       </thead>
       <tbody id="modelLibraryBody" class="divide-y divide-slate-100 dark:divide-slate-800/50">
@@ -418,9 +419,14 @@ body { font-family: 'Inter', sans-serif; }
       <div class="workbench-panel mx-0 border-0 border-b border-slate-200 dark:border-slate-800" style="border-radius:0;">
         <div class="panel-header">
           <span>COMPARATIVE PERFORMANCE</span>
-          <button onclick="exportCSV()" class="flex items-center gap-1 text-primary hover:text-primary/80 text-[11px] font-bold">
-            EXPORT CSV <span class="material-symbols-outlined" style="font-size:11px;">download</span>
-          </button>
+          <div class="flex items-center gap-3">
+            <button onclick="_shareReport()" class="flex items-center gap-1 text-primary hover:text-primary/80 text-[11px] font-bold">
+              SHARE <span class="material-symbols-outlined" style="font-size:11px;">share</span>
+            </button>
+            <button onclick="exportCSV()" class="flex items-center gap-1 text-primary hover:text-primary/80 text-[11px] font-bold">
+              EXPORT CSV <span class="material-symbols-outlined" style="font-size:11px;">download</span>
+            </button>
+          </div>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-left text-[13px]">
@@ -446,6 +452,37 @@ body { font-family: 'Inter', sans-serif; }
       </div>
       <!-- ── Full Response Text Comparison ── -->
       <div id="responseCards" class="hidden grid gap-4 p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800"></div>
+      <!-- ── Leaderboard + History ── -->
+      <div class="workbench-panel mx-0 border-0 border-t border-slate-200 dark:border-slate-800" style="border-radius:0;">
+        <div class="panel-header">
+          <div class="flex items-center gap-3">
+            <span>ELO LEADERBOARD</span>
+            <button onclick="_toggleHistoryView()" id="histToggleBtn" class="text-primary hover:text-primary/80 text-[10px] font-bold uppercase">Show History</button>
+          </div>
+          <button onclick="_clearHistory()" class="text-[10px] text-slate-400 hover:text-red-500 font-bold">CLEAR</button>
+        </div>
+        <div id="leaderboardWrap" class="overflow-x-auto">
+          <table class="w-full text-left text-[13px]">
+            <thead class="sticky top-0 bg-slate-50 dark:bg-slate-900 z-10 border-b border-slate-200 dark:border-slate-700">
+              <tr class="text-slate-500 dark:text-slate-400 uppercase" style="font-size:11px;">
+                <th class="px-4 py-2">#</th>
+                <th class="px-4 py-2">Model</th>
+                <th class="px-4 py-2">ELO</th>
+                <th class="px-4 py-2">Wins</th>
+                <th class="px-4 py-2">Losses</th>
+                <th class="px-4 py-2">Draws</th>
+                <th class="px-4 py-2">Games</th>
+                <th class="px-4 py-2">Avg Score</th>
+                <th class="px-4 py-2">Avg t/s</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardBody" class="divide-y divide-slate-100 dark:divide-slate-800"></tbody>
+          </table>
+        </div>
+        <div id="historyWrap" class="hidden max-h-60 overflow-y-auto">
+          <div id="historyList" class="p-3 space-y-2 text-[11px]"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -492,6 +529,16 @@ body { font-family: 'Inter', sans-serif; }
           <button onclick="loadQuestion('reasoning')" class="qpill">🧠 Reasoning</button>
           <button onclick="loadQuestion('multilingual')" class="qpill">🌍 Multilingual</button>
         </div>
+        <!-- Preset scenario cards -->
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wide whitespace-nowrap">Scenarios:</span>
+          <button onclick="loadScenario('clinical_triage')" class="qpill" title="Emergency triage scenario: medical questions, clinical judge, low temperature">🏥 Clinical Triage</button>
+          <button onclick="loadScenario('code_review')" class="qpill" title="Code review: coding prompts, code judge, temp 0.1, 1024 tokens">💻 Code Review</button>
+          <button onclick="loadScenario('math_olympiad')" class="qpill" title="Hard reasoning: math puzzles, reasoning judge, temp 0, 2048 tokens, 30min timeout">🧮 Math Olympiad</button>
+          <button onclick="loadScenario('polyglot')" class="qpill" title="Multilingual: questions in various languages, multilingual judge">🌍 Polyglot Test</button>
+          <button onclick="loadScenario('speed_test')" class="qpill" title="Speed benchmark: short answers, 128 tokens, fast inference">⚡ Speed Test</button>
+          <button onclick="loadScenario('stress_test')" class="qpill" title="Stress test: long context, 4096 tokens, high temp">🔥 Stress Test</button>
+        </div>
         <textarea id="systemPrompt" rows="1"
           class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2.5 py-1.5 text-[13px] resize-none focus:ring-1 focus:ring-primary outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 font-mono"
           placeholder="System prompt (optional)…"></textarea>
@@ -506,7 +553,22 @@ body { font-family: 'Inter', sans-serif; }
         <div class="flex gap-1.5 items-center flex-wrap">
           <button id="prependBtn" onclick="prependDocumentToPrompt()" class="hidden text-[12px] px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-primary hover:text-primary">📎 Prepend Doc</button>
           <button id="replaceBtn" onclick="replacePromptWithDocument()" class="hidden text-[12px] px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-primary hover:text-primary">🔄 Replace with Doc</button>
+          <button onclick="_toggleBatchMode()" class="text-[11px] px-2.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-primary hover:border-primary transition-all" title="Batch mode: run multiple prompts sequentially">📋 Batch</button>
           <button onclick="toggleAdvParams()" class="text-[11px] px-2.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-slate-400 hover:text-primary hover:border-primary ml-auto transition-all">⚙ Params</button>
+        </div>
+        <!-- Batch prompts (collapsed by default) -->
+        <div id="batchPanel" class="hidden flex-col gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/30">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold text-amber-700 dark:text-amber-400">📋 BATCH MODE — one prompt per line</span>
+            <div class="flex gap-2">
+              <button onclick="_addBankToBatch()" class="text-[10px] text-amber-600 hover:text-amber-700 font-bold">+ Add All Bank</button>
+              <span id="batchCount" class="text-[10px] text-amber-500">0 prompts</span>
+            </div>
+          </div>
+          <textarea id="batchPrompts" rows="4" class="w-full bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-700 rounded px-2.5 py-1.5 text-[12px] resize-y focus:ring-1 focus:ring-amber-400 outline-none font-mono placeholder:text-amber-300 dark:placeholder:text-amber-600" placeholder="Enter multiple prompts, one per line...&#10;What is gravity?&#10;Explain photosynthesis&#10;Write a haiku about AI" oninput="_updateBatchCount()"></textarea>
+          <button onclick="_runBatch()" id="batchRunBtn" class="px-4 py-1.5 bg-amber-500 text-white rounded-lg font-bold text-[11px] hover:bg-amber-400 active:scale-95 transition-all flex items-center gap-1.5 self-start">
+            <span class="material-symbols-outlined" style="font-size:13px;">play_arrow</span> Run Batch
+          </button>
         </div>
         <!-- Advanced params (collapsed by default) -->
         <div id="advParams" class="hidden flex-col gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
@@ -770,6 +832,7 @@ body { font-family: 'Inter', sans-serif; }
         <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 shrink-0">Browse &amp; Add Model</p>
         <div class="flex gap-1.5 flex-wrap">
           <button onclick="switchRepo('hf',this)" class="repo-tab-btn active-tab px-3 py-1 rounded text-[11px] font-bold border border-primary bg-primary/10 text-primary">🤗 HuggingFace</button>
+          <button onclick="switchRepo('discover',this)" class="repo-tab-btn px-3 py-1 rounded text-[11px] font-bold border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-primary hover:text-primary">🔍 Discover</button>
           <button onclick="switchRepo('ms',this)" class="repo-tab-btn px-3 py-1 rounded text-[11px] font-bold border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-primary hover:text-primary">🌐 ModelScope</button>
           <button onclick="switchRepo('gh',this)" class="repo-tab-btn px-3 py-1 rounded text-[11px] font-bold border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-primary hover:text-primary">📦 GitHub</button>
         </div>
@@ -806,6 +869,26 @@ body { font-family: 'Inter', sans-serif; }
             class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-[12px] px-3 py-1.5 focus:ring-1 focus:ring-primary outline-none dark:text-slate-200"
             oninput="_selectedCatalogModel=null;updateSelectedDisplay()"/>
         </div>
+      </div>
+
+      <!-- Discover: live HuggingFace search -->
+      <div id="repo-discover" class="repo-section hidden">
+        <div class="flex items-center gap-2 mb-3">
+          <input id="discoverSearch" type="text" placeholder="Search HuggingFace for GGUF models…"
+            class="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-[12px] px-3 py-1.5 focus:ring-1 focus:ring-primary outline-none dark:text-slate-200"
+            onkeydown="if(event.key==='Enter')runDiscoverSearch()"/>
+          <select id="discoverSort" class="text-[11px] bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-primary dark:text-slate-200 shrink-0">
+            <option value="trending">🔥 Trending</option>
+            <option value="downloads">⬇ Most Downloaded</option>
+            <option value="newest">🕐 Newest</option>
+            <option value="likes">❤ Most Liked</option>
+          </select>
+          <button onclick="runDiscoverSearch()" class="px-3 py-1.5 text-[11px] font-bold rounded bg-primary text-white hover:bg-primary/90">Search</button>
+        </div>
+        <div id="discoverGrid" class="catalog-grid">
+          <div class="col-span-2 text-center py-6 text-slate-400 text-sm">🔥 Loading trending GGUF models…</div>
+        </div>
+        <p class="mt-2 text-[10px] text-slate-400">Results from HuggingFace API · cached 15 min · ⭐ = trusted quantizer</p>
       </div>
 
       <!-- ModelScope section -->
@@ -1057,10 +1140,21 @@ async function checkSystemStatus() {
 }
 
 // ─── Model Library Sidebar ─────────────────────────────────────
+// Smart fitness badge based on available RAM/VRAM
+function _modelFitness(sizeGb) {
+  // _systemRam and _systemVram are set by checkSystemStatus()
+  const avail = (_systemVram || 0) > 0 ? _systemVram : (_systemRam || 16);
+  if (!sizeGb || sizeGb <= 0) return '<span class="text-[9px] text-slate-400">?</span>';
+  const ratio = sizeGb / avail;
+  if (ratio < 0.3)  return '<span class="text-[9px] text-emerald-500" title="Great fit: fits easily in memory">🟢</span>';
+  if (ratio < 0.6)  return '<span class="text-[9px] text-emerald-400" title="Good fit">🟡</span>';
+  if (ratio < 0.85) return '<span class="text-[9px] text-amber-500" title="Tight fit — may be slow">🟠</span>';
+  return '<span class="text-[9px] text-red-500" title="Too large for your hardware">🔴</span>';
+}
 function populateModelLibrary() {
   const tbody = document.getElementById('modelLibraryBody');
   if (!scannedModels.length) {
-    tbody.innerHTML = `<tr><td colspan="3" class="px-3 py-4 text-center text-[10px] text-slate-400">No GGUF models in C:\\AI\\Models</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="px-3 py-4 text-center text-[10px] text-slate-400">No GGUF models in C:\\AI\\Models</td></tr>`;
     return;
   }
   tbody.innerHTML = scannedModels.map((m, idx) => {
@@ -1068,13 +1162,15 @@ function populateModelLibrary() {
     const quant = m.name.match(/Q\d[_K_MSB]+/i)?.[0] || (m.name.includes('FP16')?'FP16':'—');
     const size  = m.size_gb ? m.size_gb.toFixed(1)+'GB' : '?';
     const sel   = selectedModels.includes(`local:${idx}`);
+    const fit   = _modelFitness(m.size_gb || 0);
     return `<tr class="model-row ${sel?'selected':''}" onclick="toggleModel('local:${idx}','${m.path.replace(/\\/g,'\\\\')}')" id="modelrow-local:${idx}">
       <td class="px-3 py-1.5 font-medium flex items-center gap-1.5 cursor-pointer">
         <span class="w-1.5 h-1.5 rounded-full ${sel?'bg-primary':'bg-slate-300 dark:bg-slate-600'} shrink-0"></span>
-        <span class="truncate max-w-[140px]" title="${label}">${label}</span>
+        <span class="truncate max-w-[120px]" title="${label}">${label}</span>
       </td>
       <td class="px-2 py-1.5 text-slate-500 text-[10px]">${size}</td>
       <td class="px-2 py-1.5 text-slate-500 text-[10px]">${quant}</td>
+      <td class="px-1 py-1.5">${fit}</td>
     </tr>`;
   }).join('');
 }
@@ -1460,14 +1556,158 @@ async function runComparison() {
       const k = getStoredKeys();
       body.api_keys = { openai: k.openai||'', anthropic: k.claude||'', google: k.google||'' };
     }
-    const r = await fetch(`${BACKEND}/__comparison/mixed`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal: AbortSignal.timeout(600000) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-    const data = await r.json();
-    displayResults(data, judgeModel);
-    showStatus('✓ Comparison complete!', 'success');
+
+    // Use SSE streaming for local-only comparisons, fall back to JSON for cloud
+    if (localSel.length && !onlineSel.length) {
+      await _runStreamComparison(body, judgeModel);
+    } else {
+      const r = await fetch(`${BACKEND}/__comparison/mixed`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal: AbortSignal.timeout(600000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      const data = await r.json();
+      displayResults(data, judgeModel);
+      _saveToHistory({
+        prompt: body.prompt,
+        responses: data.results || data.responses || [],
+        judge_model: judgeModel,
+        timestamp: Date.now()/1000,
+      });
+      showStatus('✓ Comparison complete!', 'success');
+    }
   } catch(err) {
     showStatus('Error: ' + err.message, 'error');
   } finally {
+    document.getElementById('runBtn').disabled = false;
+  }
+}
+
+// ─── SSE Streaming Comparison ─────────────────────────────────
+async function _runStreamComparison(body, judgeModel) {
+  // Prepare streaming UI: show race bars + partial response cards
+  _streamingResponses = {};
+  _showStreamingUI(body.local_models);
+
+  const r = await fetch(`${BACKEND}/__comparison/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    let eventType = '';
+    let dataStr = '';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        dataStr = line.slice(6);
+        if (eventType && dataStr) {
+          try {
+            const payload = JSON.parse(dataStr);
+            _handleStreamEvent(eventType, payload, judgeModel);
+          } catch(e) { /* skip malformed */ }
+        }
+        eventType = '';
+        dataStr = '';
+      }
+    }
+  }
+}
+
+let _streamingResponses = {};
+
+function _showStreamingUI(modelPaths) {
+  document.getElementById('resultsPlaceholder').classList.add('hidden');
+  document.getElementById('resultsSection').classList.remove('hidden');
+  // Clear results table
+  document.getElementById('resultsBody').innerHTML = '';
+  // Show race bars area
+  const rc = document.getElementById('responseCards');
+  if (rc) {
+    rc.classList.remove('hidden');
+    rc.style.gridTemplateColumns = modelPaths.length <= 2 ? `repeat(${modelPaths.length}, 1fr)` : 'repeat(auto-fill,minmax(320px,1fr))';
+    rc.innerHTML = modelPaths.map((p, i) => {
+      const name = getModelName(p);
+      return `<div id="stream-card-${i}" class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <span class="font-bold text-[12px] text-primary truncate">${escHtml(name)}</span>
+          <span class="font-mono text-[10px] text-slate-400" id="stream-stats-${i}">waiting…</span>
+        </div>
+        <div class="relative h-2 bg-slate-100 dark:bg-slate-800 shrink-0">
+          <div id="stream-bar-${i}" class="h-full bg-primary transition-all" style="width:0%;"></div>
+        </div>
+        <div id="stream-text-${i}" class="p-3 overflow-y-auto text-[12px] leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-wrap" style="max-height:260px;min-height:60px;color:#94a3b8;">⏳ Waiting…</div>
+      </div>`;
+    }).join('');
+  }
+}
+
+function _handleStreamEvent(event, payload, judgeModel) {
+  if (event === 'model_start') {
+    const idx = payload.model_index;
+    _streamingResponses[idx] = { tokens: [], model: payload.model };
+    const textEl = document.getElementById(`stream-text-${idx}`);
+    if (textEl) { textEl.textContent = ''; textEl.style.color = ''; }
+    const statsEl = document.getElementById(`stream-stats-${idx}`);
+    if (statsEl) statsEl.textContent = `generating… (${payload.model_index+1}/${payload.total_models})`;
+    showStatus(`🔄 Running model ${payload.model_index+1}/${payload.total_models}: ${payload.model}`, 'info');
+  }
+  else if (event === 'token') {
+    const idx = payload.model_index;
+    if (_streamingResponses[idx]) {
+      _streamingResponses[idx].tokens.push(payload.token);
+    }
+    const textEl = document.getElementById(`stream-text-${idx}`);
+    if (textEl) textEl.textContent += payload.token;
+    // Update progress bar based on token count vs max_tokens
+    const maxTok = parseInt(document.getElementById('paramMaxTokens')?.value || '512');
+    const pct = Math.min(100, (payload.token_count / maxTok) * 100);
+    const barEl = document.getElementById(`stream-bar-${idx}`);
+    if (barEl) barEl.style.width = `${pct}%`;
+    const statsEl = document.getElementById(`stream-stats-${idx}`);
+    if (statsEl) {
+      const tps = payload.token_count / (payload.elapsed_ms / 1000);
+      statsEl.textContent = `${payload.token_count} tok · ${tps.toFixed(1)} t/s`;
+    }
+  }
+  else if (event === 'model_done') {
+    const idx = payload.model_index !== undefined ? payload.model_index :
+      Object.keys(_streamingResponses).find(k => _streamingResponses[k]?.model === payload.model);
+    if (idx !== undefined) {
+      const barEl = document.getElementById(`stream-bar-${idx}`);
+      if (barEl) { barEl.style.width = '100%'; barEl.classList.add('bg-emerald-500'); barEl.classList.remove('bg-primary'); }
+      const statsEl = document.getElementById(`stream-stats-${idx}`);
+      if (statsEl) statsEl.textContent = `✅ ${payload.tokens} tok · ${payload.tokens_per_sec} t/s · ${(payload.time_ms/1000).toFixed(2)}s`;
+    }
+  }
+  else if (event === 'judge_start') {
+    showStatus('⚖️ Judge model scoring responses…', 'info');
+  }
+  else if (event === 'judge_done' || event === 'done') {
+    if (payload.responses) {
+      displayResults({ responses: payload.responses, judge_model: judgeModel }, judgeModel);
+      // Save to history
+      _saveToHistory({
+        prompt: payload.prompt || document.getElementById('prompt')?.value || '',
+        responses: payload.responses,
+        judge_model: judgeModel,
+        timestamp: payload.timestamp || Date.now()/1000,
+      });
+    }
+    if (event === 'done') showStatus('✓ Comparison complete!', 'success');
+  }
+  else if (event === 'error') {
+    showStatus(`❌ Stream error: ${payload.error}`, 'error');
+  }
+}
     document.getElementById('runBtn').disabled = false;
   }
 }
@@ -1637,6 +1877,47 @@ function exportCSV() {
   a.click();
 }
 
+// ─── Shareable HTML Report ────────────────────────────────────
+function _shareReport() {
+  if (!_lastResults.length) { showStatus('⚠ Run a comparison first', 'warning'); return; }
+  const prompt = document.getElementById('prompt')?.value || '';
+  const ts = new Date().toLocaleString();
+  const rows = _lastResults.map(r => {
+    const name = getModelName(r.model_path || r.path || '');
+    const tps  = (r.tokens_per_sec || 0).toFixed(1);
+    const ttft = r.ttft_ms > 0 ? `${r.ttft_ms.toFixed(0)}ms` : '—';
+    const ram  = r.ram_delta_mb > 0 ? `${r.ram_delta_mb.toFixed(0)} MB` : '—';
+    let jd = r.judge_detail || {};
+    if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch { jd = {}; } }
+    const score = (jd.overall || r.judge_score || 0).toFixed(1);
+    const resp  = (r.response || '').substring(0, 500);
+    return `<tr><td style="padding:6px;font-weight:600">${escHtml(name)}</td><td style="padding:6px">${score}/10</td><td style="padding:6px">${tps} t/s</td><td style="padding:6px">${ttft}</td><td style="padding:6px">${ram}</td></tr>\n<tr><td colspan="5" style="padding:6px 6px 12px;color:#666;font-size:12px;white-space:pre-wrap;border-bottom:1px solid #eee">${escHtml(resp)}${r.response && r.response.length > 500 ? '…' : ''}</td></tr>`;
+  }).join('');
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Zen LLM Compare Report</title>
+<style>*{font-family:system-ui,sans-serif;margin:0}body{padding:24px;background:#f8fafc;color:#1e293b}h1{font-size:18px;margin-bottom:4px}
+table{width:100%;border-collapse:collapse;margin-top:16px}th{text-align:left;padding:8px 6px;background:#e2e8f0;font-size:11px;text-transform:uppercase}
+td{font-size:13px}.meta{color:#64748b;font-size:12px;margin-top:4px}</style></head>
+<body><h1>Zen LLM Compare — Report</h1>
+<p class="meta">Prompt: "${escHtml(prompt.substring(0, 200))}"</p>
+<p class="meta">Generated: ${ts}</p>
+<table><thead><tr><th>Model</th><th>Score</th><th>Speed</th><th>TTFT</th><th>RAM</th></tr></thead><tbody>${rows}</tbody></table>
+<p style="margin-top:16px;color:#94a3b8;font-size:10px">Generated by Zen LLM Compare · github.com/GeoHaberC/Zen_LLM_Compare</p></body></html>`;
+  const blob = new Blob([html], { type: 'text/html' });
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'zen_compare_report.html' });
+  a.click();
+  // Also try clipboard
+  if (navigator.clipboard) {
+    const text = _lastResults.map(r => {
+      const name = getModelName(r.model_path || r.path || '');
+      let jd = r.judge_detail || {};
+      if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch { jd = {}; } }
+      return `${name}: ${(jd.overall || r.judge_score || 0).toFixed(1)}/10 · ${(r.tokens_per_sec||0).toFixed(1)} t/s`;
+    }).join('\n');
+    navigator.clipboard.writeText(`Zen LLM Compare Report\nPrompt: ${prompt.substring(0,200)}\n\n${text}`).catch(()=>{});
+  }
+  showStatus('✓ Report downloaded + copied to clipboard', 'success');
+}
+
 // ─── clearAll ─────────────────────────────────────────────────
 function clearAll() {
   document.getElementById('prompt').value = '';
@@ -1645,6 +1926,222 @@ function clearAll() {
   document.getElementById('resultsPlaceholder').classList.remove('hidden');
   clearDocument();
   clearStatus();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BATCH COMPARISONS
+// ═══════════════════════════════════════════════════════════════
+function _toggleBatchMode() {
+  const panel = document.getElementById('batchPanel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) panel.style.display = 'flex';
+}
+function _updateBatchCount() {
+  const lines = (document.getElementById('batchPrompts')?.value || '').split('\n').filter(l => l.trim());
+  document.getElementById('batchCount').textContent = `${lines.length} prompts`;
+}
+function _addBankToBatch() {
+  const ta = document.getElementById('batchPrompts');
+  const existing = ta.value.trim();
+  const bankPrompts = Object.values(_QUESTION_BANK).flat().map(q => q.q);
+  ta.value = (existing ? existing + '\n' : '') + bankPrompts.join('\n');
+  _updateBatchCount();
+}
+async function _runBatch() {
+  const lines = (document.getElementById('batchPrompts')?.value || '').split('\n').filter(l => l.trim());
+  if (!lines.length) { showStatus('⚠ Add prompts to batch first (one per line)', 'warning'); return; }
+  const localSel = selectedModels.filter(id => !id.startsWith('online:'));
+  if (!localSel.length) { showStatus('⚠ Select at least 1 model first', 'warning'); return; }
+  document.getElementById('batchRunBtn').disabled = true;
+  const allResults = [];
+  for (let i = 0; i < lines.length; i++) {
+    const prompt = lines[i].trim();
+    showStatus(`📋 Batch ${i+1}/${lines.length}: "${prompt.substring(0,60)}…"`, 'info');
+    document.getElementById('prompt').value = prompt;
+    try {
+      let judgeModel = document.getElementById('judgeModel').value;
+      if (!judgeModel) { const ap = _autoPickJudge(); if (ap) judgeModel = ap; }
+      const body = {
+        prompt,
+        system_prompt: document.getElementById('systemPrompt').value || 'You are a helpful assistant.',
+        max_tokens: parseInt(document.getElementById('paramMaxTokens')?.value || '512'),
+        temperature: parseFloat(document.getElementById('paramTemp')?.value || '0.7'),
+        top_p: parseFloat(document.getElementById('paramTopP')?.value || '0.95'),
+        repeat_penalty: parseFloat(document.getElementById('paramRepeat')?.value || '1.1'),
+        n_ctx: parseInt(document.getElementById('paramCtx')?.value || '8192'),
+        inference_timeout: parseInt(document.getElementById('paramTimeout')?.value || '300'),
+        judge_model: judgeModel || null,
+        judge_template: document.getElementById('judgeTemplate')?.value || 'general',
+        judge_system_prompt: getJudgeSystemPrompt(),
+        local_models: localSel.map(id => selectedModelPaths[id] || ''),
+        online_models: [],
+        category: 'comparison',
+      };
+      const r = await fetch(`${BACKEND}/__comparison/mixed`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal: AbortSignal.timeout(600000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const responses = data.results || data.responses || [];
+      allResults.push({ prompt, responses });
+      displayResults(data, judgeModel);
+      _saveToHistory({ prompt, responses, judge_model: judgeModel, timestamp: Date.now()/1000 });
+    } catch (e) {
+      allResults.push({ prompt, error: e.message });
+    }
+  }
+  document.getElementById('batchRunBtn').disabled = false;
+  // Summary
+  const ok = allResults.filter(r => !r.error).length;
+  showStatus(`✓ Batch complete: ${ok}/${lines.length} succeeded`, ok === lines.length ? 'success' : 'warning');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PERSISTENT HISTORY + ELO LEADERBOARD
+// ═══════════════════════════════════════════════════════════════
+const _HISTORY_KEY = 'zen_compare_history';
+const _ELO_KEY     = 'zen_compare_elo';
+
+function _loadHistory() {
+  try { return JSON.parse(localStorage.getItem(_HISTORY_KEY) || '[]'); } catch { return []; }
+}
+function _loadElo() {
+  try { return JSON.parse(localStorage.getItem(_ELO_KEY) || '{}'); } catch { return {}; }
+}
+function _saveToHistory(entry) {
+  const hist = _loadHistory();
+  hist.push(entry);
+  // Keep last 200 comparisons
+  if (hist.length > 200) hist.splice(0, hist.length - 200);
+  localStorage.setItem(_HISTORY_KEY, JSON.stringify(hist));
+  _updateElo(entry.responses);
+  _renderLeaderboard();
+}
+function _clearHistory() {
+  if (!confirm('Clear all comparison history and ELO ratings?')) return;
+  localStorage.removeItem(_HISTORY_KEY);
+  localStorage.removeItem(_ELO_KEY);
+  _renderLeaderboard();
+  _renderHistory();
+}
+function _toggleHistoryView() {
+  const lw = document.getElementById('leaderboardWrap');
+  const hw = document.getElementById('historyWrap');
+  const btn = document.getElementById('histToggleBtn');
+  if (hw.classList.contains('hidden')) {
+    hw.classList.remove('hidden');
+    lw.classList.add('hidden');
+    btn.textContent = 'Show Leaderboard';
+    _renderHistory();
+  } else {
+    hw.classList.add('hidden');
+    lw.classList.remove('hidden');
+    btn.textContent = 'Show History';
+  }
+}
+
+// ELO calculation (K=32, standard chess-style)
+function _updateElo(responses) {
+  if (!responses || responses.length < 2) return;
+  const elo = _loadElo();
+  const K = 32;
+  // Get scores for each model
+  const scored = responses.map(r => {
+    const name = getModelName(r.model_path || r.path || '');
+    let jd = r.judge_detail || {};
+    if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch { jd = {}; } }
+    const score = jd.overall || r.judge_score || r.quality_score || 0;
+    if (!elo[name]) elo[name] = { rating: 1500, wins: 0, losses: 0, draws: 0, games: 0, totalScore: 0, totalTps: 0 };
+    elo[name].games++;
+    elo[name].totalScore += score;
+    elo[name].totalTps += (r.tokens_per_sec || 0);
+    return { name, score };
+  });
+  // Pairwise ELO updates
+  for (let i = 0; i < scored.length; i++) {
+    for (let j = i + 1; j < scored.length; j++) {
+      const a = scored[i], b = scored[j];
+      const rA = elo[a.name].rating, rB = elo[b.name].rating;
+      const eA = 1 / (1 + Math.pow(10, (rB - rA) / 400));
+      const eB = 1 - eA;
+      let sA, sB;
+      if (Math.abs(a.score - b.score) < 0.5) {
+        sA = 0.5; sB = 0.5;
+        elo[a.name].draws++; elo[b.name].draws++;
+      } else if (a.score > b.score) {
+        sA = 1; sB = 0;
+        elo[a.name].wins++; elo[b.name].losses++;
+      } else {
+        sA = 0; sB = 1;
+        elo[a.name].losses++; elo[b.name].wins++;
+      }
+      elo[a.name].rating = Math.round(rA + K * (sA - eA));
+      elo[b.name].rating = Math.round(rB + K * (sB - eB));
+    }
+  }
+  localStorage.setItem(_ELO_KEY, JSON.stringify(elo));
+}
+
+function _renderLeaderboard() {
+  const elo = _loadElo();
+  const tb = document.getElementById('leaderboardBody');
+  if (!tb) return;
+  const sorted = Object.entries(elo).sort((a,b) => b[1].rating - a[1].rating);
+  if (!sorted.length) {
+    tb.innerHTML = '<tr><td colspan="9" class="text-center text-slate-400 py-4 text-[11px]">No history yet — run comparisons to build the leaderboard</td></tr>';
+    return;
+  }
+  const medalEmoji = ['🥇','🥈','🥉'];
+  tb.innerHTML = sorted.map(([name, s], i) => {
+    const avgScore = s.games ? (s.totalScore / s.games).toFixed(1) : '—';
+    const avgTps   = s.games ? (s.totalTps   / s.games).toFixed(1) : '—';
+    const ratingCls = s.rating >= 1600 ? 'text-emerald-600 dark:text-emerald-400 font-bold'
+                    : s.rating >= 1400 ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-red-600 dark:text-red-400';
+    return `<tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
+      <td class="px-4 py-2 text-[11px] font-bold">${medalEmoji[i] || (i+1)}</td>
+      <td class="px-4 py-2 text-[11px] font-semibold">${escHtml(name)}</td>
+      <td class="px-4 py-2 text-[11px] ${ratingCls}">${s.rating}</td>
+      <td class="px-4 py-2 text-[11px] text-emerald-600">${s.wins}</td>
+      <td class="px-4 py-2 text-[11px] text-red-500">${s.losses}</td>
+      <td class="px-4 py-2 text-[11px] text-slate-400">${s.draws}</td>
+      <td class="px-4 py-2 text-[11px]">${s.games}</td>
+      <td class="px-4 py-2 text-[11px] font-mono">${avgScore}</td>
+      <td class="px-4 py-2 text-[11px] font-mono">${avgTps}</td>
+    </tr>`;
+  }).join('');
+}
+
+function _renderHistory() {
+  const hist = _loadHistory();
+  const el = document.getElementById('historyList');
+  if (!el) return;
+  if (!hist.length) { el.innerHTML = '<p class="text-slate-400 text-center py-3">No history yet</p>'; return; }
+  el.innerHTML = hist.slice().reverse().map((h, i) => {
+    const ts = new Date((h.timestamp || 0) * 1000).toLocaleString();
+    const prompt = (h.prompt || '').substring(0, 80);
+    const models = (h.responses || []).map(r => getModelName(r.model_path || r.path || '')).join(' vs ');
+    const scores = (h.responses || []).map(r => {
+      let jd = r.judge_detail || {};
+      if (typeof jd === 'string') { try { jd = JSON.parse(jd); } catch { jd = {}; } }
+      return (jd.overall || r.judge_score || 0).toFixed(1);
+    }).join(' / ');
+    return `<div class="flex items-start gap-2 p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800/40 cursor-pointer" onclick="_replayHistory(${hist.length - 1 - i})">
+      <span class="text-slate-400 shrink-0">#${hist.length - i}</span>
+      <div class="min-w-0 flex-1">
+        <div class="truncate font-medium">${escHtml(prompt)}…</div>
+        <div class="text-slate-400 text-[10px]">${escHtml(models)} · ${scores} · ${ts}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _replayHistory(idx) {
+  const hist = _loadHistory();
+  const h = hist[idx];
+  if (!h) return;
+  const data = { responses: h.responses };
+  displayResults(data, h.judge_model);
+  document.getElementById('prompt').value = h.prompt || '';
+  showStatus('Showing historical result', 'info');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2081,6 +2578,7 @@ function switchRepo(name, btn) {
   document.getElementById('repo-' + name).classList.remove('hidden');
   btn.className = 'repo-tab-btn active-tab px-3 py-1 rounded text-[11px] font-bold border border-primary bg-primary/10 text-primary';
   if (name === 'hf') renderCatalog();
+  if (name === 'discover') runDiscoverSearch();
 }
 
 function setCatFilter(filter, btn) {
@@ -2090,6 +2588,104 @@ function setCatFilter(filter, btn) {
   });
   btn.className = 'cat-fb active-cat px-2.5 py-1 rounded-full text-[11px] font-bold bg-primary text-white border border-primary';
   renderCatalog();
+}
+
+// ─── Live HuggingFace Discovery ───────────────────────────────
+let _discoverLoading = false;
+
+function _escHtml(s) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(s));
+  return d.innerHTML;
+}
+
+async function runDiscoverSearch() {
+  const grid = document.getElementById('discoverGrid');
+  if (!grid || _discoverLoading) return;
+  const query = document.getElementById('discoverSearch')?.value?.trim() || '';
+  const sort  = document.getElementById('discoverSort')?.value || 'trending';
+
+  _discoverLoading = true;
+  grid.innerHTML = '<div class="col-span-2 text-center py-6 text-slate-400 text-sm"><span class="animate-pulse">🔍 Searching HuggingFace…</span></div>';
+
+  try {
+    const params = new URLSearchParams({q: query, sort, limit: '30'});
+    const resp = await fetch(`${BACKEND}/__discover-models?${params}`);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (data.models?.[0]?.error) throw new Error(data.models[0].error);
+    renderDiscoverResults(data.models || []);
+  } catch (e) {
+    grid.innerHTML = `<div class="col-span-2 text-center py-6 text-red-400 text-sm">❌ ${_escHtml(e.message)}</div>`;
+  } finally {
+    _discoverLoading = false;
+  }
+}
+
+function renderDiscoverResults(models) {
+  const grid = document.getElementById('discoverGrid');
+  if (!grid) return;
+  if (!models.length) {
+    grid.innerHTML = '<div class="col-span-2 text-center py-8 text-slate-400 text-sm">No GGUF models found</div>';
+    return;
+  }
+  const isDark = document.documentElement.classList.contains('dark');
+  grid.innerHTML = models.map(m => {
+    const author = m.author || '';
+    const trusted = m.trusted;
+    const trustBadge = trusted
+      ? `<span style="font-size:9px;font-weight:700;padding:1px 7px;border-radius:999px;background:#f59e0b20;color:#f59e0b;">⭐ Trusted</span>`
+      : '';
+    const dlCount = _fmtDl(m.downloads || 0);
+    const likes = m.likes || 0;
+    const repoId = (m.id || '').replace(/'/g, "\\'");
+    const shortId = _escHtml(m.id || '');
+    const safeAuthor = _escHtml(author);
+    const modDate = m.lastModified ? new Date(m.lastModified) : null;
+    const ageStr = modDate ? _age(modDate.getTime()) : '';
+    const tags = (m.tags || []).filter(t => _TAG_META[t] || t === 'gguf').slice(0, 4);
+    const tagHtml = tags.map(t => {
+      if (t === 'gguf') return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;background:#8b5cf620;color:#8b5cf6">📦 GGUF</span>`;
+      const tm = _TAG_META[t]; if (!tm) return '';
+      return `<span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;background:${tm.bg};color:${tm.fg}">${tm.icon} ${tm.label}</span>`;
+    }).join('');
+    const pipeline = m.pipeline ? `<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:999px;background:${isDark?'#334155':'#f1f5f9'};color:${isDark?'#94a3b8':'#64748b'};">${_escHtml(m.pipeline)}</span>` : '';
+
+    return `
+<div class="mcard" style="--mc:${trusted?'#f59e0b':'#6366f1'};border-left-color:${trusted?'#f59e0b':'#6366f1'};cursor:pointer;"
+     onclick="selectDiscoverModel('${repoId}')" title="Click to select for download">
+  <div style="min-width:0;">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">
+      <span style="font-size:12px;font-weight:800;color:${isDark?'#f1f5f9':'#1e293b'};word-break:break-all;">${shortId}</span>
+      ${trustBadge}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${tagHtml} ${pipeline}</div>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid ${isDark?'#1e293b':'#e2e8f0'};">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <span style="display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:999px;background:${isDark?'#1e3a5f55':'#dbeafe88'};">
+        <span style="font-size:12px;font-weight:800;color:#2563eb;">⬇ ${dlCount}</span>
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:999px;background:${isDark?'#44403c44':'#fef3c7aa'};">
+        <span style="font-size:12px;font-weight:800;color:#d97706;">❤ ${likes}</span>
+      </span>
+      ${ageStr ? `<span style="font-size:11px;font-weight:600;color:${isDark?'#64748b':'#94a3b8'};">${ageStr}</span>` : ''}
+    </div>
+    <span style="font-size:10px;font-weight:600;color:${isDark?'#64748b':'#94a3b8'};">${safeAuthor}</span>
+  </div>
+</div>`;
+  }).join('');
+}
+
+function selectDiscoverModel(repoId) {
+  // Put the discovered repo into the HuggingFace custom path input and switch to HF tab
+  const input = document.getElementById('hfCustom');
+  if (input) input.value = repoId;
+  _selectedCatalogModel = null;
+  updateSelectedDisplay();
+  // Switch to HF tab visually
+  const hfBtn = document.querySelector('.repo-tab-btn');
+  if (hfBtn) switchRepo('hf', hfBtn);
 }
 
 function renderCatalog() {
@@ -2467,6 +3063,81 @@ function loadQuestion(topic) {
   showStatus('✓ Question loaded — hit Run to compare', 'success');
 }
 
+// ─── Preset Scenarios ──────────────────────────────────────────
+const _SCENARIOS = {
+  clinical_triage: {
+    name: 'Clinical Triage',
+    topic: 'emergency',
+    judgeTemplate: 'medical',
+    params: { temperature: 0.2, max_tokens: 1024, n_ctx: 8192, top_p: 0.9, repeat_penalty: 1.1, inference_timeout: 300 },
+  },
+  code_review: {
+    name: 'Code Review',
+    topic: 'coding',
+    judgeTemplate: 'coding',
+    params: { temperature: 0.1, max_tokens: 1024, n_ctx: 16384, top_p: 0.95, repeat_penalty: 1.0, inference_timeout: 300 },
+  },
+  math_olympiad: {
+    name: 'Math Olympiad',
+    topic: 'reasoning',
+    judgeTemplate: 'reasoning',
+    params: { temperature: 0.0, max_tokens: 2048, n_ctx: 32768, top_p: 1.0, repeat_penalty: 1.0, inference_timeout: 1800 },
+  },
+  polyglot: {
+    name: 'Polyglot Test',
+    topic: 'multilingual',
+    judgeTemplate: 'multilingual',
+    params: { temperature: 0.7, max_tokens: 512, n_ctx: 8192, top_p: 0.95, repeat_penalty: 1.1, inference_timeout: 300 },
+  },
+  speed_test: {
+    name: 'Speed Test',
+    topic: 'random',
+    judgeTemplate: 'general',
+    params: { temperature: 0.7, max_tokens: 128, n_ctx: 2048, top_p: 0.95, repeat_penalty: 1.1, inference_timeout: 60 },
+  },
+  stress_test: {
+    name: 'Stress Test',
+    topic: 'random',
+    judgeTemplate: 'general',
+    params: { temperature: 1.2, max_tokens: 4096, n_ctx: 32768, top_p: 1.0, repeat_penalty: 1.0, inference_timeout: 1800 },
+  },
+};
+
+function loadScenario(id) {
+  const sc = _SCENARIOS[id];
+  if (!sc) return;
+  // Load a random question from the scenario's topic
+  loadQuestion(sc.topic);
+  // Set judge template
+  const tpl = document.getElementById('judgeTemplate');
+  if (tpl) tpl.value = sc.judgeTemplate;
+  // Apply params
+  const p = sc.params;
+  const te = document.getElementById('paramTemp');
+  const tv = document.getElementById('paramTempVal');
+  const mt = document.getElementById('paramMaxTokens');
+  const cx = document.getElementById('paramCtx');
+  const tp = document.getElementById('paramTopP');
+  const tpv = document.getElementById('paramTopPVal');
+  const rp = document.getElementById('paramRepeat');
+  const rpv = document.getElementById('paramRepeatVal');
+  const to = document.getElementById('paramTimeout');
+  const tl = document.getElementById('paramTempLabel');
+  const pn = document.getElementById('paramPresetNote');
+  if (te) { te.value = p.temperature; if (tv) tv.textContent = p.temperature.toFixed(2); }
+  if (mt) mt.value = p.max_tokens;
+  if (cx) cx.value = p.n_ctx;
+  if (tp) { tp.value = p.top_p; if (tpv) tpv.textContent = p.top_p.toFixed(2); }
+  if (rp) { rp.value = p.repeat_penalty; if (rpv) rpv.textContent = p.repeat_penalty.toFixed(2); }
+  if (to) to.value = p.inference_timeout;
+  if (tl) { const v=p.temperature; tl.textContent = v<0.2?'(Deterministic)':v<0.5?'(Precise)':v<0.9?'(Balanced)':v<1.2?'(Creative)':'(Wild)'; }
+  if (pn) { pn.classList.remove('hidden'); setTimeout(() => pn.classList.add('hidden'), 2500); }
+  // Show advanced params panel so user sees what changed
+  const ap = document.getElementById('advParams');
+  if (ap && ap.classList.contains('hidden')) { ap.classList.remove('hidden'); ap.style.display = 'flex'; }
+  showStatus(`✓ Scenario "${sc.name}" loaded — hit Run to compare`, 'success');
+}
+
 // ─── Judge Templates ──────────────────────────────────────────
 const _JUDGE_TEMPLATES = {
   medical: `You are a senior medical expert judge evaluating LLM responses for clinical use.
@@ -2725,6 +3396,7 @@ window.addEventListener('load', () => {
   updateOnlineModelsGrid();
   checkSystemStatus();
   refreshActiveDownloads();
+  _renderLeaderboard();
 });
 
 // ─── ZENA CHAT ────────────────────────────────────────────────

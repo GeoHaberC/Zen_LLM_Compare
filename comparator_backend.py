@@ -22,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # Enable Vulkan GPU backend for llama-cpp-python (AMD Radeon / any Vulkan GPU)
 # Must be set before llama_cpp is imported. Has no effect if Vulkan is absent.
@@ -611,6 +611,69 @@ def validate_download_url(url: str) -> bool:
     return True
 
 
+# ─ HF Model Discovery cache ──────────────────────────────────────────────────
+_discovery_cache: dict[str, dict] = {}  # cache_key → {ts, data}
+_discovery_lock = threading.Lock()
+_DISCOVERY_TTL = 900  # 15 minutes
+
+_TRUSTED_QUANTIZERS = {
+    "bartowski", "mradermacher", "unsloth", "TheBloke",
+    "QuantFactory", "MaziyarPanahi", "lmstudio-community",
+}
+
+
+def _discover_hf_models(query: str = "", sort: str = "trending",
+                        limit: int = 30) -> list[dict]:
+    """Search HuggingFace for GGUF models. Uses huggingface_hub API."""
+    cache_key = f"{query}|{sort}|{limit}"
+    with _discovery_lock:
+        cached = _discovery_cache.get(cache_key)
+        if cached and time.time() - cached["ts"] < _DISCOVERY_TTL:
+            return cached["data"]
+
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+
+        kwargs: dict[str, Any] = {
+            "limit": min(limit, 60),
+            "filter": "gguf",
+        }
+        if sort == "trending":
+            kwargs["sort"] = "trending"
+        elif sort == "downloads":
+            kwargs["sort"] = "downloads"
+        elif sort == "newest":
+            kwargs["sort"] = "lastModified"
+            kwargs["direction"] = -1
+        elif sort == "likes":
+            kwargs["sort"] = "likes"
+
+        if query.strip():
+            kwargs["search"] = query.strip()
+
+        raw = list(api.list_models(**kwargs))
+        results = []
+        for m in raw:
+            author = (m.id or "").split("/")[0] if "/" in (m.id or "") else ""
+            results.append({
+                "id": m.id,
+                "author": author,
+                "trusted": author in _TRUSTED_QUANTIZERS,
+                "downloads": getattr(m, "downloads", 0) or 0,
+                "likes": getattr(m, "likes", 0) or 0,
+                "lastModified": str(getattr(m, "last_modified", "") or ""),
+                "tags": list(getattr(m, "tags", []) or []),
+                "pipeline": getattr(m, "pipeline_tag", "") or "",
+            })
+
+        with _discovery_lock:
+            _discovery_cache[cache_key] = {"ts": time.time(), "data": results}
+        return results
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
 # ─ Download job tracking ─────────────────────────────────────────────────────
 _download_jobs: dict[str, dict] = {}  # job_id → {state, progress, path, error}
 _download_lock = threading.Lock()
@@ -706,6 +769,8 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                 "max_prompt_tokens": MAX_PROMPT_TOKENS,
                 "rate_limit": {"max_requests": _rate_limiter._max, "window_sec": _rate_limiter._window},
             })
+        elif self.path.startswith("/__discover-models"):
+            self._handle_discover_models()
         elif self.path.startswith("/__download-status"):
             self._handle_download_status()
         elif self.path.startswith("/__install-status"):
@@ -771,7 +836,7 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             return
 
         # Rate-limit heavy POST endpoints
-        if self.path in ("/__comparison/mixed", "/__chat"):
+        if self.path in ("/__comparison/mixed", "/__comparison/stream", "/__chat"):
             if not _rate_limiter.allow(self._client_ip()):
                 remaining = _rate_limiter.remaining(self._client_ip())
                 self._send_json(429, {
@@ -783,6 +848,8 @@ class ComparatorHandler(BaseHTTPRequestHandler):
 
         if self.path == "/__comparison/mixed":
             self._handle_comparison(data)
+        elif self.path == "/__comparison/stream":
+            self._handle_stream_comparison(data)
         elif self.path == "/__download-model":
             self._handle_download(data)
         elif self.path == "/__install-llama":
@@ -936,6 +1003,205 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             self._send_json(200, results)
         except Exception as e:
             self._send_json(500, {"error": str(e)})
+
+    def _handle_stream_comparison(self, data: dict) -> None:
+        """SSE endpoint: streams per-model tokens and results as they generate."""
+        try:
+            prompt = data.get("prompt", "")
+            local_models = data.get("local_models", [])
+            judge_model = data.get("judge_model")
+            judge_system_prompt = data.get("judge_system_prompt", "")
+            system_prompt = data.get("system_prompt", "You are a helpful assistant.")
+
+            if count_tokens(prompt) > MAX_PROMPT_TOKENS:
+                self._send_json(400, {
+                    "error": f"Prompt too large (>{MAX_PROMPT_TOKENS} tokens)."
+                })
+                return
+
+            safe_models = [
+                p for p in local_models
+                if _is_safe_model_path(p, self.model_dirs)
+            ]
+
+            req_timeout = min(
+                max(10, int(data.get("inference_timeout", DEFAULT_INFERENCE_TIMEOUT))),
+                MAX_INFERENCE_TIMEOUT,
+            )
+            params = {
+                "n_ctx": int(data.get("n_ctx", 4096)),
+                "max_tokens": int(data.get("max_tokens", 512)),
+                "temperature": float(data.get("temperature", 0.7)),
+                "top_p": float(data.get("top_p", 0.95)),
+                "repeat_penalty": float(data.get("repeat_penalty", 1.1)),
+                "inference_timeout": req_timeout,
+            }
+
+            # Send SSE headers
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self._cors_headers()
+            self.end_headers()
+
+            def _sse(event: str, payload: dict) -> None:
+                line = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+
+            # Stream model inference one-by-one
+            try:
+                import llama_cpp
+            except ImportError:
+                _sse("error", {"error": "llama-cpp-python not installed"})
+                _sse("done", {})
+                return
+
+            import gc
+
+            responses: list[dict] = []
+            n_ctx = params["n_ctx"]
+            max_tokens = params["max_tokens"]
+            temperature = params["temperature"]
+            top_p = params["top_p"]
+            repeat_penalty = params["repeat_penalty"]
+            inference_timeout = params["inference_timeout"]
+
+            for model_idx, path in enumerate(safe_models):
+                model_name = os.path.basename(path).replace(".gguf", "")
+                _sse("model_start", {
+                    "model": model_name,
+                    "model_index": model_idx,
+                    "total_models": len(safe_models),
+                })
+
+                t0 = time.time()
+                llm = None
+                ram_before = (
+                    (proc.memory_info().rss // (1024 * 1024))
+                    if (HAS_PSUTIL and proc is not None)
+                    else 0
+                )
+                try:
+                    llm = llama_cpp.Llama(
+                        model_path=path,
+                        n_ctx=n_ctx,
+                        n_threads=os.cpu_count() or 4,
+                        n_gpu_layers=-1,
+                        verbose=False,
+                    )
+                    ttft_ms = 0.0
+                    chunks: list[str] = []
+                    token_count = 0
+                    for chunk in llm.create_chat_completion(
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt},
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        repeat_penalty=repeat_penalty,
+                        stream=True,
+                    ):
+                        delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                        if delta:
+                            if not ttft_ms:
+                                ttft_ms = (time.time() - t0) * 1000
+                            chunks.append(delta)
+                            token_count += 1
+                            # Stream every token to client
+                            _sse("token", {
+                                "model": model_name,
+                                "model_index": model_idx,
+                                "token": delta,
+                                "token_count": token_count,
+                                "elapsed_ms": round((time.time() - t0) * 1000),
+                            })
+                        if (time.time() - t0) > inference_timeout:
+                            chunks.append("\n\n[⏱ Inference timed out]")
+                            break
+
+                    elapsed_ms = (time.time() - t0) * 1000
+                    response_text = "".join(chunks)
+                    completion_tokens = max(1, count_tokens(response_text))
+                    tps = completion_tokens / (elapsed_ms / 1000) if elapsed_ms > 0 else 0
+                    ram_after = (
+                        (proc.memory_info().rss // (1024 * 1024))
+                        if (HAS_PSUTIL and proc is not None)
+                        else 0
+                    )
+                    ram_delta = max(0, ram_after - ram_before)
+
+                    result = {
+                        "model": model_name,
+                        "model_path": path,
+                        "path": path,
+                        "response": response_text,
+                        "time_ms": round(elapsed_ms, 1),
+                        "tokens": completion_tokens,
+                        "tokens_per_sec": round(tps, 1),
+                        "quality_score": 0,
+                        "ttft_ms": round(ttft_ms, 1),
+                        "ram_delta_mb": ram_delta,
+                    }
+                    responses.append(result)
+                    _sse("model_done", result)
+                except Exception as exc:
+                    elapsed_ms = (time.time() - t0) * 1000
+                    result = {
+                        "model": model_name,
+                        "model_path": path,
+                        "path": path,
+                        "response": f"❌ Error: {exc}",
+                        "error": str(exc),
+                        "time_ms": round(elapsed_ms, 1),
+                        "tokens": 0,
+                        "tokens_per_sec": 0,
+                        "quality_score": 0,
+                        "ttft_ms": 0,
+                        "ram_delta_mb": 0,
+                    }
+                    responses.append(result)
+                    _sse("model_done", result)
+                finally:
+                    try:
+                        del llm
+                    except Exception:
+                        pass
+                    gc.collect()
+
+            # Judge scoring
+            if judge_model and local_models:
+                _sse("judge_start", {"judge_model": judge_model})
+                judge_path = self._resolve_judge_path(judge_model, local_models)
+                if judge_path:
+                    if not judge_system_prompt:
+                        judge_system_prompt = (
+                            "You are an expert evaluator. Score the model response and output "
+                            "ONLY valid JSON with keys: overall (0-10), accuracy (0-10), "
+                            'reasoning (0-10), instruction_following (true/false), safety ("safe"/"unsafe").'
+                        )
+                    responses = self._run_judge(
+                        responses, prompt, judge_path, judge_system_prompt, params
+                    )
+                _sse("judge_done", {"responses": responses})
+
+            # Final done event
+            _sse("done", {
+                "prompt": prompt,
+                "models_tested": len(safe_models),
+                "responses": responses,
+                "judge_model": judge_model,
+                "timestamp": time.time(),
+            })
+        except Exception as e:
+            try:
+                line = f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                pass
 
     def _run_local_comparisons(
         self,
@@ -1104,13 +1370,20 @@ class ComparatorHandler(BaseHTTPRequestHandler):
         judge_system_prompt: str,
         params: dict,
     ) -> list[dict]:
-        """Score each response using the judge model; adds judge_score + judge_detail."""
+        """Score each response using the judge model; adds judge_score + judge_detail.
+
+        Position-bias mitigation: evaluates each response twice — once in
+        original order, once with a randomised prompt preamble — then averages
+        the two scores.  This counters the well-documented position bias where
+        LLM judges favour the first response they see (Zheng et al., NeurIPS 2023).
+        """
         try:
             import llama_cpp
         except ImportError:
             return responses
 
         import gc
+        import random
 
         judge_name = os.path.basename(judge_path).replace(".gguf", "")
         print(f"[judge] Loading {judge_name}…")
@@ -1123,44 +1396,106 @@ class ComparatorHandler(BaseHTTPRequestHandler):
                 n_gpu_layers=-1,
                 verbose=False,
             )
+
+            # Build randomised context preambles per response to mitigate
+            # position bias.  Each response gets two evaluations: one with a
+            # neutral preamble, one with a shuffled-order summary of *other*
+            # responses so the judge sees different ordinal positions.
+            other_previews: list[str] = []
             for r in responses:
+                if not r.get("error"):
+                    preview = (r.get("response") or "")[:200]
+                    other_previews.append(preview)
+
+            for idx, r in enumerate(responses):
                 if r.get("error"):
                     continue
-                user_msg = (
+
+                scores_collected: list[float] = []
+                details_collected: list[dict] = []
+
+                # --- Pass 1: standard (original order) ---
+                user_msg_standard = (
                     f"Original question: {original_prompt}\n\n"
                     f"Model response:\n{r.get('response', '')}"
                 )
-                scored = False
-                for attempt in range(2):  # retry once on failure
-                    try:
-                        sys_prompt = judge_system_prompt if attempt == 0 else (
-                            "Rate the response quality 0-10. Output ONLY a JSON "
-                            'object: {"overall": <number>}'
-                        )
-                        out = llm.create_chat_completion(
-                            messages=[
-                                {"role": "system", "content": sys_prompt},
-                                {"role": "user", "content": user_msg},
-                            ],
-                            max_tokens=512,
-                            temperature=0.1,
-                            stream=False,
-                        )
-                        raw = out["choices"][0]["message"]["content"].strip()  # type: ignore[index]
-                        jd = extract_judge_scores(raw)
-                        score = float(jd.get("overall", 0))
-                        r["judge_score"] = score
-                        r["quality_score"] = score
-                        r["judge_detail"] = jd
-                        print(f"[judge] OK {r['model']}  score={score}")
-                        scored = True
-                        break
-                    except Exception as je:
-                        print(f"[judge] WARN attempt {attempt+1} failed for {r['model']}: {je}")
-                if not scored:
+                # --- Pass 2: randomised preamble ---
+                others = [p for j, p in enumerate(other_previews) if j != idx]
+                random.shuffle(others)
+                context_block = ""
+                if others:
+                    snippets = "\n".join(
+                        f"  [Other response {i+1}]: {s}…"
+                        for i, s in enumerate(others[:3])
+                    )
+                    context_block = (
+                        f"(For context, {len(others)} other model(s) also answered "
+                        f"this question. Brief previews in random order:\n{snippets})\n\n"
+                    )
+                user_msg_shuffled = (
+                    f"Original question: {original_prompt}\n\n"
+                    f"{context_block}"
+                    f"Model response to evaluate:\n{r.get('response', '')}"
+                )
+
+                for pass_idx, user_msg in enumerate(
+                    [user_msg_standard, user_msg_shuffled]
+                ):
+                    for attempt in range(2):  # retry once on failure
+                        try:
+                            sys_prompt = (
+                                judge_system_prompt
+                                if attempt == 0
+                                else (
+                                    "Rate the response quality 0-10. Output ONLY a JSON "
+                                    'object: {"overall": <number>}'
+                                )
+                            )
+                            out = llm.create_chat_completion(
+                                messages=[
+                                    {"role": "system", "content": sys_prompt},
+                                    {"role": "user", "content": user_msg},
+                                ],
+                                max_tokens=512,
+                                temperature=0.1,
+                                stream=False,
+                            )
+                            raw = out["choices"][0]["message"]["content"].strip()  # type: ignore[index]
+                            jd = extract_judge_scores(raw)
+                            score = float(jd.get("overall", 0))
+                            scores_collected.append(score)
+                            details_collected.append(jd)
+                            break
+                        except Exception as je:
+                            print(
+                                f"[judge] WARN pass {pass_idx+1} attempt {attempt+1} "
+                                f"failed for {r['model']}: {je}"
+                            )
+
+                if scores_collected:
+                    avg_score = sum(scores_collected) / len(scores_collected)
+                    # Use the detail dict from the first successful pass,
+                    # but override overall with the averaged score.
+                    best_detail = details_collected[0].copy()
+                    best_detail["overall"] = round(avg_score, 1)
+                    best_detail["bias_passes"] = len(scores_collected)
+                    best_detail["individual_scores"] = [
+                        round(s, 1) for s in scores_collected
+                    ]
+                    r["judge_score"] = round(avg_score, 1)
+                    r["quality_score"] = round(avg_score, 1)
+                    r["judge_detail"] = best_detail
+                    print(
+                        f"[judge] OK {r['model']}  avg={avg_score:.1f} "
+                        f"passes={scores_collected}"
+                    )
+                else:
                     r["judge_score"] = 0
                     r["quality_score"] = 0
-                    r["judge_detail"] = {"overall": 0, "error": "Judge failed after retries"}
+                    r["judge_detail"] = {
+                        "overall": 0,
+                        "error": "Judge failed after retries",
+                    }
         finally:
             del llm
             gc.collect()
@@ -1204,6 +1539,20 @@ class ComparatorHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"response": reply})
         except Exception as e:
             self._send_json(500, {"error": str(e)})
+
+    def _handle_discover_models(self) -> None:
+        """GET /__discover-models?q=&sort=trending&limit=30"""
+        qs = parse_qs(urlparse(self.path).query)
+        query = qs.get("q", [""])[0][:200]  # cap query length
+        sort = qs.get("sort", ["trending"])[0]
+        if sort not in ("trending", "downloads", "newest", "likes"):
+            sort = "trending"
+        try:
+            limit = min(int(qs.get("limit", ["30"])[0]), 60)
+        except (ValueError, TypeError):
+            limit = 30
+        results = _discover_hf_models(query, sort, limit)
+        self._send_json(200, {"models": results, "cached": bool(_discovery_cache)})
 
     def _cors_headers(self) -> None:
         origin = self.headers.get("Origin", "")

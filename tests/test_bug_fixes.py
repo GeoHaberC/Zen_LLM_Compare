@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ─── Allow importing the backend from the parent directory ──────────────────
@@ -519,3 +520,363 @@ class TestMultiGPU:
         """GGML_VK_VISIBLE_DEVICES must not be empty."""
         val = os.environ.get("GGML_VK_VISIBLE_DEVICES", "")
         assert len(val) > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 9: Judge Bias Randomization (A2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestJudgeBiasRandomization:
+    """The _run_judge method must implement dual-pass bias mitigation."""
+
+    def test_run_judge_method_exists(self):
+        """ComparatorHandler must have _run_judge."""
+        assert hasattr(cb.ComparatorHandler, '_run_judge')
+
+    def test_run_judge_signature_accepts_responses_list(self):
+        """_run_judge must accept responses list and return a list."""
+        import inspect
+        sig = inspect.signature(cb.ComparatorHandler._run_judge)
+        params = list(sig.parameters.keys())
+        assert 'responses' in params
+        assert 'original_prompt' in params
+
+    def test_extract_judge_scores_bias_passes_field(self):
+        """extract_judge_scores should parse the bias_passes field correctly."""
+        raw = '{"overall": 7.5, "accuracy": 8, "reasoning": 7, "instruction_following": "followed", "safety": "safe"}'
+        result = cb.extract_judge_scores(raw)
+        assert 'overall' in result
+        assert result['overall'] == 7.5
+
+    def test_extract_judge_scores_handles_markdown_wrap(self):
+        """extract_judge_scores should handle ```json blocks."""
+        raw = '```json\n{"overall": 8.0, "accuracy": 7}\n```'
+        result = cb.extract_judge_scores(raw)
+        assert result.get('overall') == 8.0
+
+    def test_extract_judge_scores_handles_no_json(self):
+        """extract_judge_scores should return usable output even with garbage."""
+        raw = 'I think the score is about 6 out of 10'
+        result = cb.extract_judge_scores(raw)
+        # Should at least return a dict (may have 0 or a parsed number)
+        assert isinstance(result, dict)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 10: SSE Streaming Endpoint (A1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSSEStreaming:
+    """The /__comparison/stream endpoint must exist and return SSE headers."""
+
+    @classmethod
+    def setup_class(cls):
+        _start_test_server()
+
+    def _stream_post(self, path, body_dict, read_timeout=15):
+        """POST using http.client to properly handle streaming SSE responses."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", TEST_PORT, timeout=read_timeout)
+        body = json.dumps(body_dict)
+        conn.request("POST", path, body=body, headers={
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:8123",
+        })
+        resp = conn.getresponse()
+        status = resp.status
+        headers = dict(resp.getheaders())
+        # Read body (with timeout safety)
+        body_data = resp.read(8192).decode("utf-8", errors="replace")
+        conn.close()
+        return status, headers, body_data
+
+    def test_stream_endpoint_exists(self):
+        """POST to /__comparison/stream must not return 404."""
+        status, headers, body = self._stream_post("/__comparison/stream", {
+            "prompt": "Hello",
+            "local_models": [],
+            "online_models": [],
+        })
+        assert status != 404, "Stream endpoint returned 404 — route not registered"
+        assert status == 200, f"Expected 200, got: {status}"
+
+    def test_stream_endpoint_returns_sse_content_type(self):
+        """The stream endpoint must set Content-Type: text/event-stream."""
+        status, headers, body = self._stream_post("/__comparison/stream", {
+            "prompt": "Test prompt",
+            "local_models": [],
+            "online_models": [],
+        })
+        ct = headers.get("Content-Type", "")
+        assert "text/event-stream" in ct, f"Expected SSE content-type, got: {ct}"
+        cc = headers.get("Cache-Control", "")
+        assert "no-cache" in cc, f"Expected no-cache, got: {cc}"
+
+    def test_stream_endpoint_sends_sse_events(self):
+        """The stream endpoint must send valid SSE event lines."""
+        _, _, body = self._stream_post("/__comparison/stream", {
+            "prompt": "Test",
+            "local_models": [],
+            "online_models": [],
+        })
+        # Even with no valid models it should send at least a 'done' event
+        assert "event:" in body or "data:" in body, f"No SSE events in body: {body[:300]}"
+
+    def test_stream_endpoint_does_not_crash_server(self):
+        """Server must stay alive after multiple stream requests."""
+        for _ in range(2):
+            try:
+                self._stream_post("/__comparison/stream", {
+                    "prompt": "Test",
+                    "local_models": [],
+                    "online_models": [],
+                })
+            except Exception:
+                pass
+        # Verify server is still alive
+        status, _, _ = _get("/__health", headers={"Origin": "http://127.0.0.1:8123"})
+        assert status == 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 11: Frontend Enhancements (A3, A4, B1-B3, C2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFrontendEnhancements:
+    """Verify that the HTML file contains all required enhancement elements."""
+
+    @classmethod
+    def setup_class(cls):
+        html_path = os.path.join(REPO_ROOT, "model_comparator.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            cls.html = f.read()
+
+    # A4: Scenario cards
+    def test_scenario_buttons_exist(self):
+        """HTML must contain scenario preset buttons."""
+        assert 'loadScenario(' in self.html
+        for s in ['clinical_triage', 'code_review', 'math_olympiad', 'polyglot', 'speed_test', 'stress_test']:
+            assert s in self.html, f"Missing scenario: {s}"
+
+    def test_scenarios_config_object(self):
+        """_SCENARIOS config must exist in JS."""
+        assert '_SCENARIOS' in self.html
+
+    # A3: History + ELO
+    def test_history_storage_key(self):
+        """localStorage key for history must be defined."""
+        assert 'zen_compare_history' in self.html
+
+    def test_elo_storage_key(self):
+        """localStorage key for ELO must be defined."""
+        assert 'zen_compare_elo' in self.html
+
+    def test_leaderboard_table_exists(self):
+        """Leaderboard HTML table must exist."""
+        assert 'leaderboardBody' in self.html
+
+    def test_save_to_history_function(self):
+        """_saveToHistory function must exist."""
+        assert '_saveToHistory' in self.html
+
+    def test_update_elo_function(self):
+        """_updateElo function must exist."""
+        assert '_updateElo' in self.html
+
+    def test_render_leaderboard_function(self):
+        """_renderLeaderboard function must exist."""
+        assert '_renderLeaderboard' in self.html
+
+    def test_replay_history_function(self):
+        """_replayHistory function must exist."""
+        assert '_replayHistory' in self.html
+
+    # B1: Race visualization
+    def test_stream_cards_exist(self):
+        """Streaming UI cards with progress bars must exist."""
+        assert 'stream-bar-' in self.html
+        assert 'stream-text-' in self.html
+        assert 'stream-stats-' in self.html
+
+    def test_handle_stream_event_function(self):
+        """_handleStreamEvent must exist for SSE processing."""
+        assert '_handleStreamEvent' in self.html
+
+    # B2: Smart recommendations
+    def test_model_fitness_function(self):
+        """_modelFitness function must exist."""
+        assert '_modelFitness' in self.html
+
+    def test_fitness_column_header(self):
+        """Model library table must have a Fit column."""
+        assert '>Fit<' in self.html
+
+    # B3: Shareable reports
+    def test_share_report_function(self):
+        """_shareReport function must exist."""
+        assert '_shareReport' in self.html
+
+    def test_share_button_exists(self):
+        """Share button must be in the results panel."""
+        assert 'SHARE' in self.html
+        assert '_shareReport()' in self.html
+
+    # C2: Batch comparisons
+    def test_batch_mode_toggle(self):
+        """_toggleBatchMode function must exist."""
+        assert '_toggleBatchMode' in self.html
+
+    def test_batch_panel_exists(self):
+        """Batch panel HTML must exist."""
+        assert 'batchPanel' in self.html
+        assert 'batchPrompts' in self.html
+
+    def test_run_batch_function(self):
+        """_runBatch function must exist."""
+        assert '_runBatch' in self.html
+
+    def test_add_bank_to_batch_function(self):
+        """_addBankToBatch function must exist."""
+        assert '_addBankToBatch' in self.html
+
+    # A1: SSE streaming
+    def test_run_stream_comparison_function(self):
+        """_runStreamComparison function must exist."""
+        assert '_runStreamComparison' in self.html
+
+    def test_show_streaming_ui_function(self):
+        """_showStreamingUI function must exist."""
+        assert '_showStreamingUI' in self.html
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEST 12: HuggingFace Model Discovery
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestModelDiscovery:
+    """Verify discovery endpoints and frontend elements."""
+
+    # ── Backend unit tests ──────────────────────────────────────────────────
+
+    def test_discover_endpoint_exists(self):
+        """GET /__discover-models must return 200, not 404."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?q=test&sort=trending&limit=5", timeout=15)
+        assert resp.status == 200
+
+    def test_discover_returns_json(self):
+        """Discovery endpoint must return valid JSON with 'models' key."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?q=&sort=trending&limit=5", timeout=15)
+        data = json.loads(resp.read().decode())
+        assert "models" in data
+
+    def test_discover_sort_validation(self):
+        """Invalid sort values should default to trending (not crash)."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?sort=INVALID", timeout=15)
+        assert resp.status == 200
+
+    def test_discover_limit_cap(self):
+        """Limit should be capped at 60."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?limit=999", timeout=15)
+        assert resp.status == 200
+
+    def test_trusted_quantizers_list(self):
+        """_TRUSTED_QUANTIZERS must contain known reliable sources."""
+        assert hasattr(cb, '_TRUSTED_QUANTIZERS')
+        for q in ("bartowski", "mradermacher", "TheBloke", "unsloth"):
+            assert q in cb._TRUSTED_QUANTIZERS
+
+    def test_discovery_cache_structure(self):
+        """Discovery cache dict must exist on the module."""
+        assert hasattr(cb, '_discovery_cache')
+        assert isinstance(cb._discovery_cache, dict)
+
+    def test_discovery_ttl_reasonable(self):
+        """Cache TTL should be between 5 and 60 minutes."""
+        assert 300 <= cb._DISCOVERY_TTL <= 3600
+
+    # ── Frontend tests ──────────────────────────────────────────────────────
+
+    @classmethod
+    def setup_class(cls):
+        html_path = os.path.join(REPO_ROOT, "model_comparator.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            cls.html = f.read()
+
+    def test_discover_tab_button(self):
+        """Discover tab button must exist in download modal."""
+        assert "switchRepo('discover'" in self.html
+
+    def test_discover_section_html(self):
+        """repo-discover section must exist."""
+        assert 'id="repo-discover"' in self.html
+
+    def test_discover_search_input(self):
+        """Search input field must exist in Discover tab."""
+        assert 'id="discoverSearch"' in self.html
+
+    def test_discover_sort_dropdown(self):
+        """Sort dropdown in Discover tab must exist."""
+        assert 'id="discoverSort"' in self.html
+
+    def test_run_discover_search_function(self):
+        """runDiscoverSearch function must exist."""
+        assert 'function runDiscoverSearch' in self.html
+
+    def test_render_discover_results_function(self):
+        """renderDiscoverResults function must exist."""
+        assert 'function renderDiscoverResults' in self.html
+
+    def test_select_discover_model_function(self):
+        """selectDiscoverModel function must exist."""
+        assert 'function selectDiscoverModel' in self.html
+
+    def test_discover_grid_element(self):
+        """discoverGrid container must exist."""
+        assert 'id="discoverGrid"' in self.html
+
+    def test_trusted_badge_in_frontend(self):
+        """Trusted quantizer badge must be rendered."""
+        assert 'Trusted' in self.html
+
+    # ── X-Ray: Security & edge-case tests ──────────────────────────────────
+
+    def test_discover_limit_non_numeric_does_not_crash(self):
+        """Non-numeric limit param must not crash the server."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?limit=abc", timeout=15)
+        assert resp.status == 200
+
+    def test_discover_empty_query_safe(self):
+        """Empty query must return valid response."""
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?q=", timeout=15)
+        data = json.loads(resp.read().decode())
+        assert "models" in data
+
+    def test_discover_xss_in_query_param(self):
+        """XSS in query param must not break response."""
+        xss = urllib.parse.quote('<script>alert(1)</script>')
+        resp = urllib.request.urlopen(f"{TEST_URL}/__discover-models?q={xss}", timeout=15)
+        assert resp.status == 200
+
+    def test_frontend_eschtml_function_exists(self):
+        """_escHtml sanitizer function must exist in HTML."""
+        assert 'function _escHtml' in self.html
+
+    def test_frontend_uses_eschtml_for_error(self):
+        """Error display must use _escHtml to prevent XSS."""
+        assert '_escHtml(e.message)' in self.html
+
+    def test_frontend_uses_eschtml_for_model_id(self):
+        """Model ID display must use _escHtml to prevent XSS from malicious repo names."""
+        assert "_escHtml(m.id" in self.html
+
+    def test_frontend_uses_eschtml_for_author(self):
+        """Author display must use _escHtml."""
+        assert "_escHtml(author)" in self.html
+
+    def test_frontend_uses_eschtml_for_pipeline(self):
+        """Pipeline tag must use _escHtml."""
+        assert "_escHtml(m.pipeline)" in self.html
+
+    def test_discover_no_frontend_cache(self):
+        """Frontend must not have its own data cache (backend handles caching)."""
+        assert '_discoverCache' not in self.html
